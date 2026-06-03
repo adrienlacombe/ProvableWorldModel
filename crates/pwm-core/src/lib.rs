@@ -18,7 +18,9 @@
 extern crate alloc;
 
 pub mod field;
+pub mod fixed_point;
 pub mod obs;
 pub mod relation;
 
+pub use fixed_point::BoundedInt;
 pub use relation::StatementType;
