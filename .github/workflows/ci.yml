@@ -82,7 +82,7 @@ jobs:
       - run: cargo build -p pwm-verifier --no-default-features --locked --target thumbv7em-none-eabi
 
   docs:
-    name: Doc build (rustdoc -D warnings)
+    name: Doc build + link check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,9 +90,13 @@ jobs:
         with:
           toolchain: "1.85.0"
       - uses: Swatinem/rust-cache@v2
+      # rustdoc for the public API; -D warnings fails on broken intra-doc links.
       - run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
+      # Internal cross-reference check across the docs corpus (file + anchor).
+      - name: Internal link check (docs/)
+        run: python3 ci/check-links.py
 
   license:
     name: License / SPDX
