@@ -19,6 +19,7 @@ extern crate alloc;
 
 pub mod field;
 pub mod fixed_point;
+pub mod limb;
 pub mod obs;
 pub mod relation;
 pub mod tensor;
