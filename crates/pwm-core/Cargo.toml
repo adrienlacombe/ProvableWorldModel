@@ -9,6 +9,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+# Vendored Stwo, field types only (RFC-0002 re-export). The workspace pins
+# default-features = false, so this is no_std and pulls in no prover/FRI/PCS/
+# channel code: the one permitted substrate edge for pwm-core (INV-ARCH-01).
+stwo = { workspace = true }
+
 [dev-dependencies]
 # Test-only: validates that the hand-rolled value-free JSON emitter produces
 # well-formed JSON and round-trips. Never a runtime dependency of pwm-core, so

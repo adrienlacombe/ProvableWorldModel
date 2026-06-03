@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod field;
 pub mod obs;
 pub mod relation;
 

@@ -14,10 +14,10 @@ pwm-core = { workspace = true }
 pwm-air = { workspace = true }
 pwm-circuits = { workspace = true }
 pwm-export = { workspace = true }
-# Vendored Stwo prover (RFC-0015), referenced by path only. This is the first
-# in-tree consumer that proves third_party/stwo builds as a path dependency; the
-# prover drives the Stwo commit/challenge/proof flow.
-stwo = { workspace = true }
+# Vendored Stwo prover (RFC-0015), referenced by path only. The prover drives the
+# Stwo commit/challenge/proof flow, so it opts into the `prover` feature (which
+# enables std); the workspace default is no_std for the verifier path.
+stwo = { workspace = true, features = ["prover"] }
 
 [lints]
 workspace = true
