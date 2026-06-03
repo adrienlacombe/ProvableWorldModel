@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "pwm-circuits"
+description = "Low-level scalar gates and adapters to the vendored stwo-circuits gate set, plus the witness builder used for hashing, public-input binding, glue, and recursion plumbing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+pwm-core = { path = "../pwm-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "pwm-air"
+description = "NN-specific AIR components: their preprocessed/main/interaction columns and constraint sets — the arithmetization of the LeWorldModel."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+pwm-core = { path = "../pwm-core" }
+pwm-circuits = { path = "../pwm-circuits" }
+
+[lints]
+workspace = true

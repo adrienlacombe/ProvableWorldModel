@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Workspace manifest for ProvableWorldModel.
+#
+# Pins the shared package metadata (MSRV, edition, license), the workspace-wide
+# lint configuration, and the build profiles. The six first-party crates under
+# `crates/` partition the system along the strict layering boundary defined in
+# docs/spec/01-architecture.md#crate-layout. Vendored dependencies live under
+# `third_party/` and are pinned per RFC-0015; they are intentionally absent from
+# this skeleton (see issues #24, #25).
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# MSRV floor. docs/spec/09-release-and-versioning.md#msrv records that the exact
+# pin is finalized when the edition-2024 vendored tree is frozen (RFC-0015, an
+# open question at this milestone); 1.85 is the documented lower bound and is not
+# asserted as the final MSRV here.
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/AbdelStark/ProvableWorldModel"
+authors = ["ProvableWorldModel contributors"]
+
+# Shared lints applied to every first-party crate via `[lints] workspace = true`.
+# The CI clippy/fmt/header gates (#73) build on this baseline.
+[workspace.lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+missing_docs = "warn"
+rust_2018_idioms = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+# Build profiles. The performance-budget profile is tuned under the perf gate
+# (#75); these are conservative defaults appropriate for a prover binary.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

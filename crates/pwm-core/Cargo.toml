@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "pwm-core"
+description = "Field/fixed-point types, tensors, manifest types, canonical serialization, and Fiat-Shamir transcript shared across ProvableWorldModel. no_std-clean and free of proving dependencies (INV-ARCH-01)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

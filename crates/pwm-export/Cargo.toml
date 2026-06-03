@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "pwm-export"
+description = "Export/quantize pipeline. The Rust side holds the canonical fixed-point reference inference and the Python<->Rust<->golden parity harness; the Python subpackage extracts the graph and writes the manifest. Nothing depends on pwm-export (INV-ARCH-02)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+pwm-core = { path = "../pwm-core" }
+
+[lints]
+workspace = true
