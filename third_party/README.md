@@ -12,13 +12,17 @@ vendoring, modification, and re-audit policy is governed by
 | `stwo/` | github.com/starkware-libs/stwo | Apache-2.0 | Workspace v2.2.0 — Circle-STARK prover/verifier, M31 field module, FRI + PCS, Fiat-Shamir channels, LogUp. |
 | `stwo-circuits/` | github.com/starkware-libs/stwo-circuits | Apache-2.0 | v0.1.0 (edition 2024) — the low-level scalar gate set. |
 
+The authoritative TCB / license inventory is [`INVENTORY.md`](INVENTORY.md).
+
 ## Status
 
-This is the workspace skeleton (issue #23). The actual upstream code is **not**
-vendored yet; that is the work of issues #24 (`stwo`) and #25 (`stwo-circuits`).
-Each subtree carries a `REVISION` file recording the exact pinned commit. Until
-the revisions are frozen during the `v0.1 — Foundations` milestone, both files
-contain the placeholder string `pending-rfc-0015`.
+- **`stwo/`** — vendored (#24). Pristine at `v2.2.0`
+  (`289c20de80b7c7f508de9c46151fb81dae404154`); see [`stwo/REVISION`](stwo/REVISION)
+  and [`stwo/UPSTREAM.md`](stwo/UPSTREAM.md). First-party crates depend on it by
+  path; the tree is its own workspace and is `exclude`d from the first-party
+  workspace.
+- **`stwo-circuits/`** — not vendored yet (#25); `REVISION` holds the placeholder
+  `pending-rfc-0015`.
 
 Vendored files retain their upstream license headers unmodified; the first-party
 SPDX header lint excludes `third_party/`

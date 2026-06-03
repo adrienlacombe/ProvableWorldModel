@@ -1,0 +1,11 @@
+Stwo
+Copyright StarkWare Industries Ltd.
+
+This product includes software developed by StarkWare Industries Ltd.
+(https://github.com/starkware-libs/stwo), vendored under third_party/stwo at the
+pinned revision recorded in third_party/stwo/REVISION and licensed under the
+Apache License, Version 2.0 (see third_party/stwo/LICENSE).
+
+Upstream ships no NOTICE file at the pinned commit
+(289c20de80b7c7f508de9c46151fb81dae404154); this file is provided by the
+ProvableWorldModel vendoring to record attribution per RFC-0015.

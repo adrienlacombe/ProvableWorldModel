@@ -168,14 +168,14 @@ third_party/
     PATCHES/
       0001-<slug>.patch       # one file per local modification, applied in order
       0001-<slug>.md          # rationale, audit note, upstream-PR/issue link or "none"
-    src/...                   # vendored source tree (workspace member crates)
+    crates/...                # vendored source tree, upstream layout preserved verbatim
   stwo-circuits/
     REVISION
     LICENSE
     NOTICE
     UPSTREAM.md
     PATCHES/
-    src/...
+    crates/...
 ```
 
 `third_party/<comp>/REVISION` is the single source of truth for the pin. Schema
@@ -210,10 +210,12 @@ path dependency into the vendored tree.
 
 ```toml
 # crates/pwm-air/Cargo.toml — REQUIRED form
+# (The vendored tree preserves the upstream `crates/` layout verbatim, so the
+#  path is `third_party/stwo/crates/<dir>`; see third_party/stwo/UPSTREAM.md.)
 [dependencies]
-stwo                       = { path = "../../third_party/stwo/src/stwo" }
-stwo-constraint-framework  = { path = "../../third_party/stwo/src/stwo-constraint-framework" }
-stwo-air-utils             = { path = "../../third_party/stwo/src/stwo-air-utils" }
+stwo                       = { path = "../../third_party/stwo/crates/stwo" }
+stwo-constraint-framework  = { path = "../../third_party/stwo/crates/constraint-framework" }
+stwo-air-utils             = { path = "../../third_party/stwo/crates/air-utils" }
 
 # FORBIDDEN forms (CI gate rejects either):
 # stwo = "2.2.0"
