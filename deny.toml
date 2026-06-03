@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-deny configuration for the License / SPDX merge gate
+# (docs/spec/07-testing-strategy.md#ci-gates). Enforces the Apache-2.0 audit
+# discipline of RFC-0015: only permissive licenses compatible with the project's
+# Apache-2.0 license and the vendored Apache-2.0 proving substrate are allowed.
+
+[licenses]
+# Permissive licenses compatible with Apache-2.0. The first-party crates and the
+# vendored Stwo / stwo-circuits trees are Apache-2.0; MIT/BSD/ISC/Unicode cover
+# the common transitive dependencies introduced once vendoring lands (#24, #25).
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+# The allow list is forward-looking (no external deps exist on the skeleton yet);
+# do not warn about allowed-but-unmatched licenses until the vendoring lands.
+unused-allowed-license = "allow"
+
+[bans]
+# Conservative defaults; tightened when the dependency inventory lands (#26).
+multiple-versions = "allow"
+
+[advisories]
+# The License/SPDX gate runs `cargo deny check licenses`; advisories are handled
+# by the dependency audit (#26). Keep defaults permissive here.
+yanked = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "allow"

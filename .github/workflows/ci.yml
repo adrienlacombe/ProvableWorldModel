@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Merge-gate pipeline (docs/spec/07-testing-strategy.md#ci-gates, RFC-0013).
+# Every job below must pass for a PR to merge (INV-TEST-16). The pipeline is
+# pinned to the MSRV toolchain for determinism (INV-TEST-17) with an additional
+# current-stable test leg. Perf-budget (#75) and golden-parity (export harness)
+# gates are wired by their own issues.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to keep the queue short.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned MSRV toolchain (docs/spec/09-release-and-versioning.md#msrv).
+  MSRV: "1.85.0"
+
+jobs:
+  format:
+    name: Format (cargo fmt --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Lint (clippy -D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Tests (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.85.0", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --locked
+
+  no-std:
+    name: no_std verifier build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          # Bare-metal target with no std: the strong INV-ARCH-01/02 check.
+          targets: thumbv7em-none-eabi
+      - uses: Swatinem/rust-cache@v2
+      # Canonical gate command (docs/spec/07-testing-strategy.md#ci-gates).
+      - run: cargo build -p pwm-verifier --no-default-features --locked
+      # Stronger enforcement: the verifier + its dependency chain link with no
+      # std at all. pwm-export / pwm-prover must never enter this build.
+      - run: cargo build -p pwm-verifier --no-default-features --locked --target thumbv7em-none-eabi
+
+  docs:
+    name: Doc build (rustdoc -D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  license:
+    name: License / SPDX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SPDX header check
+        run: bash ci/check-spdx.sh
+      - name: cargo-deny (licenses)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
