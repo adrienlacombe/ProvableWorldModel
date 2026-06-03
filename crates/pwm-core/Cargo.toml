@@ -22,6 +22,8 @@ blake2 = { workspace = true }
 # well-formed JSON and round-trips. Never a runtime dependency of pwm-core, so
 # the no_std / dependency-free trust-root guarantee is unaffected.
 serde_json = { workspace = true }
+# Test-only: the transcript tests draw channel challenges to compare orderings.
+stwo = { workspace = true }
 
 [lints]
 workspace = true
