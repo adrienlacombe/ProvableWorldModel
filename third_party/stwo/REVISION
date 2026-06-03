@@ -1,1 +1,12 @@
-pending-rfc-0015
+# Vendored revision pin for third_party/stwo (RFC-0015).
+component         = "stwo"
+upstream_url      = "https://github.com/starkware-libs/stwo"
+upstream_ref      = "refs/tags/v2.2.0"
+commit            = "289c20de80b7c7f508de9c46151fb81dae404154"
+vendored_at       = "2026-06-03"
+workspace_version = "2.2.0"
+license           = "Apache-2.0"
+tree_sha256       = "60ff8b3890ff4aa43a6be19e659c45486dbea2ff03cb0a7c659b448420a18b6c"
+patches_sha256    = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+audited_by        = "pending (area:security)"
+audit_note        = "third_party/stwo/PATCHES/AUDIT-2026-06-03.md"

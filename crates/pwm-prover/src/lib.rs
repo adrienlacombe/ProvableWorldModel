@@ -20,3 +20,6 @@ use pwm_air as _;
 use pwm_circuits as _;
 use pwm_core as _;
 use pwm_export as _;
+// Vendored proving substrate (third_party/stwo, RFC-0015). Linked here to prove
+// the path-dependency wiring builds; the prover flow uses it from #62 onward.
+use stwo as _;
