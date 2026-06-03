@@ -205,3 +205,83 @@ fn diff_witness(a: &BoundedInt, b: &BoundedInt, strict: i64) -> Result<BoundedIn
         })
     })
 }
+
+/// The rounding mode applied by [`requantize`]. Exactly one is active per
+/// manifest, bound by `quantization_commitment` (INV-FP-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rounding {
+    /// Round half to even (the canonical default).
+    NearestTiesToEven,
+    /// Truncate toward zero on the original signed value (optional override).
+    TruncateTowardZero,
+}
+
+/// The exact quotient/remainder split of `n` by `2^r` with a **nonnegative**
+/// remainder (RFC-0002 §4.4, INV-FP-05): `q = floor(n / 2^r)` (toward −∞) and
+/// `rem = n − q·2^r`, so `0 <= rem < 2^r` and `n == q·2^r + rem` exactly. These
+/// are the witnesses the requantization AIR range-checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotRem {
+    /// Floor quotient (toward −∞).
+    pub q: i64,
+    /// Nonnegative remainder, `0 <= rem < 2^r`.
+    pub rem: i64,
+}
+
+/// Compute the exact split [`QuotRem`] of `n` by `2^r`. `r` must be `< 63`.
+pub fn split_pow2(n: i64, r: u32) -> QuotRem {
+    debug_assert!(r < 63, "shift {r} too large for i64");
+    let divisor = 1i64 << r;
+    QuotRem {
+        q: n.div_euclid(divisor),
+        rem: n.rem_euclid(divisor),
+    }
+}
+
+/// Apply the rounding mode to a split (RFC-0002 §4.4). `n` is the original signed
+/// value (used by `TruncateTowardZero`).
+pub fn round(split: QuotRem, r: u32, n: i64, mode: Rounding) -> i64 {
+    let QuotRem { q, rem } = split;
+    if rem == 0 {
+        // Exact: no rounding for either mode (also the only case when r == 0).
+        return q;
+    }
+    match mode {
+        Rounding::NearestTiesToEven => {
+            // r >= 1 here, since a nonzero remainder requires 2^r > 1.
+            let half = 1i64 << (r - 1);
+            if rem < half {
+                q
+            } else if rem > half {
+                q + 1
+            } else {
+                q + (q & 1) // tie: bump to even
+            }
+        }
+        Rounding::TruncateTowardZero => {
+            // q is floor(n/2^r); toward-zero keeps q for n >= 0 and q+1 for n < 0
+            // (rem != 0 here).
+            if n >= 0 {
+                q
+            } else {
+                q + 1
+            }
+        }
+    }
+}
+
+/// Clamp `x` to `[c_lo, c_hi]` (RFC-0002 §4.5). Clamp is bound-narrowing, applied
+/// only where the manifest declares it; it never repairs an out-of-range value.
+pub fn clamp(x: i64, c_lo: i64, c_hi: i64) -> i64 {
+    x.clamp(c_lo, c_hi)
+}
+
+/// Requantize an accumulator: rescale by an arithmetic right shift of `r` bits
+/// with the exact split, apply the rounding `mode`, add `zero_point`, and clamp
+/// to `[c_lo, c_hi]` (RFC-0002 §4.4). This is the locked reference the AIR
+/// reproduces bit-for-bit.
+pub fn requantize(n: i64, r: u32, zero_point: i64, c_lo: i64, c_hi: i64, mode: Rounding) -> i64 {
+    let split = split_pow2(n, r);
+    let rounded = round(split, r, n, mode);
+    clamp(rounded + zero_point, c_lo, c_hi)
+}
