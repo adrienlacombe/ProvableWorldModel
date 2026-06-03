@@ -217,6 +217,50 @@ pub enum Rounding {
     TruncateTowardZero,
 }
 
+impl Rounding {
+    /// Immutable canonical-serialization discriminant (RFC-0014 §1).
+    pub const fn discriminant(self) -> u8 {
+        match self {
+            Rounding::NearestTiesToEven => 0,
+            Rounding::TruncateTowardZero => 1,
+        }
+    }
+
+    /// Inverse of [`Rounding::discriminant`]; `None` for an unknown value.
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Rounding::NearestTiesToEven),
+            1 => Some(Rounding::TruncateTowardZero),
+            _ => None,
+        }
+    }
+}
+
+/// The overflow policy. V0 has exactly one: `Reject` (wrapping is unsound). A
+/// `Wrap`/`Saturate` variant would be a new relation version, not a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowPolicy {
+    /// Reject any value whose bound escapes the representable interval.
+    Reject,
+}
+
+impl OverflowPolicy {
+    /// Immutable canonical-serialization discriminant (RFC-0014 §1).
+    pub const fn discriminant(self) -> u8 {
+        match self {
+            OverflowPolicy::Reject => 0,
+        }
+    }
+
+    /// Inverse of [`OverflowPolicy::discriminant`]; `None` for an unknown value.
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(OverflowPolicy::Reject),
+            _ => None,
+        }
+    }
+}
+
 /// The exact quotient/remainder split of `n` by `2^r` with a **nonnegative**
 /// remainder (RFC-0002 §4.4, INV-FP-05): `q = floor(n / 2^r)` (toward −∞) and
 /// `rem = n − q·2^r`, so `0 <= rem < 2^r` and `n == q·2^r + rem` exactly. These

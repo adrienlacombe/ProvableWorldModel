@@ -18,9 +18,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::field::{M31, P};
-use crate::fixed_point::{BoundError, BoundedInt};
+use crate::fixed_point::{BoundError, BoundedInt, OverflowPolicy, Rounding};
 use crate::relation::StatementType;
-use crate::tensor::{Tensor, TensorError};
+use crate::tensor::{Dtype, Scale, Tensor, TensorError};
 
 /// A type with a canonical byte encoding.
 pub trait CanonicalEncode {
@@ -149,6 +149,7 @@ impl_le_int!(u8, 1);
 impl_le_int!(u16, 2);
 impl_le_int!(u32, 4);
 impl_le_int!(u64, 8);
+impl_le_int!(i32, 4);
 impl_le_int!(i64, 8);
 
 impl CanonicalEncode for bool {
@@ -331,6 +332,48 @@ impl CanonicalDecode for StatementType {
         StatementType::from_discriminant(value).ok_or(DecodeError::InvalidDiscriminant {
             type_name: "StatementType",
             value,
+        })
+    }
+}
+
+/// Helper: encode/decode a fieldless enum as a `u8` discriminant.
+macro_rules! impl_enum_u8 {
+    ($ty:ty, $name:literal) => {
+        impl CanonicalEncode for $ty {
+            fn encode(&self, out: &mut Vec<u8>) {
+                out.push(self.discriminant());
+            }
+        }
+        impl CanonicalDecode for $ty {
+            fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+                let value = reader.take(1)?[0];
+                <$ty>::from_discriminant(value).ok_or(DecodeError::InvalidDiscriminant {
+                    type_name: $name,
+                    value,
+                })
+            }
+        }
+    };
+}
+
+impl_enum_u8!(Rounding, "Rounding");
+impl_enum_u8!(OverflowPolicy, "OverflowPolicy");
+impl_enum_u8!(Dtype, "Dtype");
+
+impl CanonicalEncode for Scale {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.scale_id.encode(out);
+        self.log2.encode(out);
+        self.dtype.encode(out);
+    }
+}
+
+impl CanonicalDecode for Scale {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Scale {
+            scale_id: u32::decode(reader)?,
+            log2: i32::decode(reader)?,
+            dtype: Dtype::decode(reader)?,
         })
     }
 }

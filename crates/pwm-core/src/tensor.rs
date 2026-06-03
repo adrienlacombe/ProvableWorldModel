@@ -33,6 +33,25 @@ impl Dtype {
             Dtype::I32 => (i32::MIN as i64, i32::MAX as i64),
         }
     }
+
+    /// Immutable canonical-serialization discriminant (RFC-0014 §1).
+    pub const fn discriminant(self) -> u8 {
+        match self {
+            Dtype::I8 => 0,
+            Dtype::I16 => 1,
+            Dtype::I32 => 2,
+        }
+    }
+
+    /// Inverse of [`Dtype::discriminant`]; `None` for an unknown value.
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Dtype::I8),
+            1 => Some(Dtype::I16),
+            2 => Some(Dtype::I32),
+            _ => None,
+        }
+    }
 }
 
 /// One entry of the manifest scale table: a `scale_id`, its power-of-two exponent
