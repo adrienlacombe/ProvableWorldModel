@@ -4,11 +4,20 @@
 //!
 //! This crate owns the shared vocabulary every other crate speaks: field and
 //! fixed-point types, tensors, manifest types, canonical serialization, the
-//! Fiat-Shamir transcript, and `relation_id`. It carries **no proving
-//! dependencies** (no Stwo prover, FRI, PCS, channel, or constraint framework)
-//! and compiles under `no_std`, so it is linkable into the `no_std` verifier
-//! path. See `docs/spec/01-architecture.md` (INV-ARCH-01).
+//! Fiat-Shamir transcript, `relation_id`, and the observability schema. It
+//! carries **no proving dependencies** (no Stwo prover, FRI, PCS, channel, or
+//! constraint framework) and compiles under `no_std`, so it is linkable into the
+//! `no_std` verifier path. See `docs/spec/01-architecture.md` (INV-ARCH-01).
 //!
-//! This is the workspace skeleton (issue #23). The modules listed in the
-//! architecture (`field`, `fixed_point`, `tensor`, `manifest`, `transcript`,
-//! `serialize`, `relation_id`) land in their own issues (#27 onward).
+//! Heap-allocating types use [`alloc`]; the crate does not require `std`.
+//!
+//! The remaining modules listed in the architecture (`field`, `fixed_point`,
+//! `tensor`, `manifest`, `transcript`, `serialize`) land in their own issues
+//! (#27 onward).
+
+extern crate alloc;
+
+pub mod obs;
+pub mod relation;
+
+pub use relation::StatementType;
