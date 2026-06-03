@@ -56,7 +56,7 @@ Stwo and stwo-circuits are vendored under `third_party/` at pinned revisions and
 
 The exact pinned revisions are recorded in `third_party/stwo/REVISION` and `third_party/stwo-circuits/REVISION` at vendoring time.
 
-> OPEN QUESTION: the precise Stwo and stwo-circuits commit hashes are not yet selected. Owner: `area:core` maintainer. Resolution path: RFC-0015 records the exact revisions when the vendoring lands in milestone `v0.1 — Foundations`; until then, both `REVISION` files contain the placeholder string `pending-rfc-0015`.
+> RESOLVED (2026-06-03, RFC-0015 toolchain decision): the pinned revisions are `stwo` `v2.2.0` (`289c20de80b7c7f508de9c46151fb81dae404154`) and `stwo-circuits` `v0.1.0` (`b0db13e46d977e0bb10a28321a7f09bf5ea516aa`). Both require nightly Rust, so the project pins `nightly-2025-07-14` in `rust-toolchain.toml`. The exact hashes are written to each `REVISION` file when the tree is vendored (issues #24, #25); until then both files contain the placeholder string `pending-rfc-0015`.
 
 Apache-2.0 is the project license, chosen for compatibility with the vendored Apache-2.0 Stwo and for the patent grant that matters in a cryptographic system. See [docs/spec/09-release-and-versioning.md#license](09-release-and-versioning.md#license).
 

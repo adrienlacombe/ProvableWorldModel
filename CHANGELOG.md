@@ -38,4 +38,12 @@ entry (see
   release-preparation helper (`ci/prepare-release.py`), and the tagged release
   workflow (#76).
 
+### Changed
+
+- Adopted a pinned nightly build toolchain (`rust-toolchain.toml`,
+  `nightly-2025-07-14`) and switched CI to it. The vendored proving substrate
+  (Stwo `v2.2.0`, stwo-circuits `v0.1.0`) requires nightly Rust, so the V0 line
+  has no stable MSRV; downstream verifier integrators build on the pinned nightly
+  (RFC-0015 toolchain decision; `docs/spec/09-release-and-versioning.md#msrv`).
+
 [Unreleased]: https://github.com/AbdelStark/ProvableWorldModel/commits/main

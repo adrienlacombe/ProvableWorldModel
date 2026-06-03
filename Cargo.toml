@@ -16,10 +16,10 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# MSRV floor. docs/spec/09-release-and-versioning.md#msrv records that the exact
-# pin is finalized when the edition-2024 vendored tree is frozen (RFC-0015, an
-# open question at this milestone); 1.85 is the documented lower bound and is not
-# asserted as the final MSRV here.
+# Informational floor for the first-party crates only. The authoritative build
+# toolchain is the pinned nightly in rust-toolchain.toml: the vendored proving
+# substrate requires nightly, so there is no stable MSRV for the workspace during
+# V0 (RFC-0015 toolchain decision; docs/spec/09-release-and-versioning.md#msrv).
 rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/AbdelStark/ProvableWorldModel"
