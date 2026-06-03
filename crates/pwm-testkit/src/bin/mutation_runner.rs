@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Constraint-mutation runner entry point (CI job, layer 8).
 //!
-//! Runs every registered [`MutationCampaign`], applies the INV-TEST-05 gate, and
-//! exits non-zero if the suite is inadequate. On the skeleton the only registered
-//! campaign is [`EmptyCampaign`] (no constraints exist yet), so the runner is
-//! wired into CI and green; components register real campaigns as they land.
+//! Runs every registered [`MutationCampaign`](pwm_testkit::mutation::MutationCampaign),
+//! applies the INV-TEST-05 gate, and exits non-zero if the suite is inadequate.
+//! On the skeleton the only registered campaign is [`EmptyCampaign`] (no
+//! constraints exist yet), so the runner is wired into CI and green; components
+//! register real campaigns as they land.
 
 use std::process::ExitCode;
 
