@@ -285,3 +285,16 @@ pub fn requantize(n: i64, r: u32, zero_point: i64, c_lo: i64, c_hi: i64, mode: R
     let rounded = round(split, r, n, mode);
     clamp(rounded + zero_point, c_lo, c_hi)
 }
+
+/// Accumulate a left fold `acc_0 = bias`, `acc_{i+1} = acc_i + term_i` over a
+/// single signed M31 value (RFC-0002 §4.3). Each step propagates the bound and
+/// rejects (never wraps) if the running bound escapes `M31_SIGNED` — the point at
+/// which the value must instead be limb-decomposed (`crate::limb`). Returns the
+/// final accumulator.
+pub fn accumulate(bias: &BoundedInt, terms: &[BoundedInt]) -> Result<BoundedInt, Overflow> {
+    let mut acc = *bias;
+    for term in terms {
+        acc = acc.add(term)?;
+    }
+    Ok(acc)
+}
