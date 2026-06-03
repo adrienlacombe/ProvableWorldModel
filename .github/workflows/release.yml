@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Release automation (docs/spec/09-release-and-versioning.md, RFC-0016).
+#
+# Triggered by pushing a semver tag `vX.Y.Z`. Validates the tag against the
+# semver policy and the changelog (INV-REL-10), runs the license/SPDX gate and
+# the quality bar, packages the publishable crates, and publishes a GitHub
+# Release with the changelog section as notes and the `.crate` files attached.
+#
+# Publishing to a registry is intentionally out of scope (deferred); this
+# produces the packaged artifacts but does not run `cargo publish`. A manual
+# `workflow_dispatch` runs every check as a dry run without creating a release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to dry-run, e.g. 0.1.0 (no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Validate, package, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+      - name: Tag matches semver policy
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! echo "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag version '$VERSION' is not semver-conformant"
+            exit 1
+          fi
+
+      - name: Tag matches workspace version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          WS_VERSION="$(grep -m1 -E '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          if [ "$VERSION" != "$WS_VERSION" ]; then
+            echo "::error::tag version '$VERSION' != workspace version '$WS_VERSION'"
+            exit 1
+          fi
+
+      - name: Changelog completeness (INV-REL-10)
+        run: python3 ci/check-changelog.py "${{ steps.version.outputs.version }}"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # License gate runs in the release path (acceptance criterion).
+      - name: License / SPDX gate
+        run: bash ci/check-spdx.sh
+      - name: cargo-deny (licenses)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+      # Quality bar — the release must pass the same gates as a merge.
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+
+      # Package the publishable crates (pwm-testkit is publish=false). The whole
+      # workspace is packaged together so inter-crate deps resolve among the set.
+      - name: Package crates
+        run: |
+          cargo package --workspace --exclude pwm-testkit --no-verify --locked
+          ls -1 target/package/*.crate
+
+      - name: Extract release notes
+        id: notes
+        run: |
+          python3 ci/check-changelog.py --extract "${{ steps.version.outputs.version }}" > RELEASE_NOTES.md
+          echo "Release notes:"; cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md \
+            target/package/*.crate
