@@ -1,0 +1,18 @@
+{
+  "header": {
+    "relation_id": "pwm.lewm.predictor_step.v1",
+    "manifest_version": 1,
+    "quantization_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "export_tool_version": "0.0.0-skeleton",
+    "generator_seed": 0
+  },
+  "primitive": "requantize",
+  "domain": { "lo": -2048, "hi": 2047 },
+  "vectors": [
+    { "label": "exact", "inputs": [256, 3], "outputs": [32] },
+    { "label": "tie_up_to_even", "inputs": [12, 3], "outputs": [2] },
+    { "label": "tie_down_to_even", "inputs": [20, 3], "outputs": [2] },
+    { "label": "round_up", "inputs": [13, 3], "outputs": [2] },
+    { "label": "negative_tie_to_even", "inputs": [-12, 3], "outputs": [-2] }
+  ]
+}

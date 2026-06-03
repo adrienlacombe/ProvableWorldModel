@@ -105,3 +105,17 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses
+
+  mutation:
+    name: Constraint mutation (scoped)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+      - uses: Swatinem/rust-cache@v2
+      # Skeleton scope: the runner evaluates every registered campaign (only the
+      # empty campaign exists yet) and exits non-zero on a survivor or a score
+      # below target (INV-TEST-05). Components register real campaigns as they land.
+      - run: cargo run -p pwm-testkit --bin mutation_runner --locked

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "pwm-testkit"
+description = "Shared test scaffolding for ProvableWorldModel: the accept/reject (dual-test) harness, the committed golden-vector loader, and the constraint-mutation runner skeleton. Test infrastructure only; not published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
