@@ -21,10 +21,13 @@ pub mod field;
 pub mod fixed_point;
 pub mod limb;
 pub mod obs;
+pub mod public_input;
 pub mod relation;
 pub mod serialize;
 pub mod tensor;
+pub mod transcript;
 
 pub use fixed_point::BoundedInt;
+pub use public_input::PublicInput;
 pub use relation::StatementType;
 pub use tensor::Tensor;
