@@ -10,7 +10,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-pwm-core = { path = "../pwm-core" }
+pwm-core = { workspace = true }
 
 [lints]
 workspace = true

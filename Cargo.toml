@@ -25,6 +25,21 @@ license = "Apache-2.0"
 repository = "https://github.com/AbdelStark/ProvableWorldModel"
 authors = ["ProvableWorldModel contributors"]
 
+# Centralized dependency versions. First-party crates carry a `version` (not just
+# a `path`) so the workspace is publishable-ready: `cargo package` requires a
+# version requirement on every dependency. The release tooling
+# (ci/prepare-release.py) bumps these in lockstep with `workspace.package.version`.
+[workspace.dependencies]
+pwm-core = { path = "crates/pwm-core", version = "0.1.0" }
+pwm-circuits = { path = "crates/pwm-circuits", version = "0.1.0" }
+pwm-air = { path = "crates/pwm-air", version = "0.1.0" }
+pwm-export = { path = "crates/pwm-export", version = "0.1.0" }
+pwm-prover = { path = "crates/pwm-prover", version = "0.1.0" }
+pwm-verifier = { path = "crates/pwm-verifier", version = "0.1.0" }
+# Test-only third-party dependencies (used by pwm-testkit and pwm-core dev-deps).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Shared lints applied to every first-party crate via `[lints] workspace = true`.
 # The CI clippy/fmt/header gates (#73) build on this baseline.
 [workspace.lints.rust]
