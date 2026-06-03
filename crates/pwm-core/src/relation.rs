@@ -38,4 +38,28 @@ impl StatementType {
             StatementType::P4PixelToPlan => "P4PixelToPlan",
         }
     }
+
+    /// The immutable canonical-serialization discriminant (RFC-0014 §1).
+    /// Renumbering is a breaking change gated by `relation_id`.
+    pub const fn discriminant(self) -> u8 {
+        match self {
+            StatementType::P0Step => 0,
+            StatementType::P1Rollout => 1,
+            StatementType::P2FixedCandidatePlanning => 2,
+            StatementType::P3Cem => 3,
+            StatementType::P4PixelToPlan => 4,
+        }
+    }
+
+    /// Inverse of [`StatementType::discriminant`]; `None` for an unknown value.
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(StatementType::P0Step),
+            1 => Some(StatementType::P1Rollout),
+            2 => Some(StatementType::P2FixedCandidatePlanning),
+            3 => Some(StatementType::P3Cem),
+            4 => Some(StatementType::P4PixelToPlan),
+            _ => None,
+        }
+    }
 }

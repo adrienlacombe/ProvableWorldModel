@@ -575,6 +575,7 @@ dependencies = [
 name = "pwm-core"
 version = "0.1.0"
 dependencies = [
+ "blake2",
  "serde_json",
  "stwo",
 ]

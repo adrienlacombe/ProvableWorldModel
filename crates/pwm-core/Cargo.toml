@@ -14,6 +14,8 @@ authors.workspace = true
 # default-features = false, so this is no_std and pulls in no prover/FRI/PCS/
 # channel code: the one permitted substrate edge for pwm-core (INV-ARCH-01).
 stwo = { workspace = true }
+# Blake2s for the public-input digest, commitments, and transcript (RFC-0014).
+blake2 = { workspace = true }
 
 [dev-dependencies]
 # Test-only: validates that the hand-rolled value-free JSON emitter produces

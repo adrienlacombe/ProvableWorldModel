@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 
 use crate::field::{M31, P};
 use crate::fixed_point::{BoundError, BoundedInt};
+use crate::relation::StatementType;
 use crate::tensor::{Tensor, TensorError};
 
 /// A type with a canonical byte encoding.
@@ -315,5 +316,21 @@ impl CanonicalDecode for Tensor {
         // Tensor::new re-checks len == product(shape): a mismatched encoded len
         // (a non-canonical Tensor) is rejected here.
         Tensor::new(tensor_id, shape, scale_id, data).map_err(DecodeError::Tensor)
+    }
+}
+
+impl CanonicalEncode for StatementType {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.discriminant());
+    }
+}
+
+impl CanonicalDecode for StatementType {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let value = reader.take(1)?[0];
+        StatementType::from_discriminant(value).ok_or(DecodeError::InvalidDiscriminant {
+            type_name: "StatementType",
+            value,
+        })
     }
 }
