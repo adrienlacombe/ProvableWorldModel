@@ -43,3 +43,7 @@ No public soundness claim is made for any relation that has not passed the
 security-review gate defined in
 [docs/spec/07-testing-strategy.md](docs/spec/07-testing-strategy.md) and
 [docs/rfcs/RFC-0013-testing-fuzzing-and-audit-strategy.md](docs/rfcs/RFC-0013-testing-fuzzing-and-audit-strategy.md).
+That gate signs off against the
+[soundness and binding checklist](docs/security/soundness-binding-checklist.md),
+which maps every binding (B1–B15) and range-safety requirement to its enforcing
+RFC, issue, verifier rejection, and test.
