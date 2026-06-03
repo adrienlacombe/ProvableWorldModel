@@ -525,6 +525,60 @@ Differential test:
   to the audit note; the test fails if the diff is non-empty and no `area:security`
   sign-off is present.
 
+## Toolchain decision (2026-06-03 amendment)
+
+This amendment freezes the vendored revisions and the build toolchain, resolving
+the MSRV open question in
+[docs/spec/09-release-and-versioning.md#msrv](../spec/09-release-and-versioning.md#msrv)
+and the commit-hash open question in
+[docs/spec/01-architecture.md#crate-layout](../spec/01-architecture.md#crate-layout).
+
+**Frozen revisions.** The V0 line pins:
+
+| Component | Tag | Commit |
+| --- | --- | --- |
+| `third_party/stwo` | `v2.2.0` | `289c20de80b7c7f508de9c46151fb81dae404154` |
+| `third_party/stwo-circuits` | `v0.1.0` | `b0db13e46d977e0bb10a28321a7f09bf5ea516aa` |
+
+These are recorded in each component's `REVISION` file when the tree is vendored
+(#24, #25); until then the placeholder is `pending-rfc-0015`.
+
+**Toolchain: pinned nightly.** Both upstream trees require nightly Rust — Stwo
+`v2.2.0` pins `nightly-2025-07-14`, stwo-circuits pins `nightly-2025-06-23`, and
+both use nightly-only features (portable SIMD and others). Therefore the project
+adopts a single pinned nightly for the V0 line, recorded in the workspace
+`rust-toolchain.toml`:
+
+```toml
+channel = "nightly-2025-07-14"
+```
+
+`nightly-2025-07-14` is the newer of the two upstream pins and builds both
+vendored trees and all first-party crates (verified 2026-06-03: `stwo` and
+`stwo-constraint-framework` compile on it; the full first-party merge-gate suite
+— fmt, clippy `-D warnings`, tests, the `no_std` bare-metal verifier build, and
+docs — passes on it).
+
+**Consequences (recorded honestly):**
+
+- There is **no stable MSRV** for the workspace during V0. The earlier
+  "lowest stable Rust" MSRV model in
+  [docs/spec/09-release-and-versioning.md#msrv](../spec/09-release-and-versioning.md#msrv)
+  is superseded for V0: the build toolchain is the pinned nightly. The MSRV
+  concept returns if and when the proving substrate gains a stable-Rust path.
+- The consequence reaches the verifier: because `pwm-verifier` depends on the
+  vendored Stwo verifier path, **downstream verifier integrators also build on
+  the pinned nightly** for V0. This is a real cost forced by the upstream
+  dependency, not a project preference; it is revisited under
+  [RFC-0012](RFC-0012-recursive-aggregated-verification.md) and any future
+  stable-Rust verifier effort.
+- INV-REL-11's intent is preserved: the pinned nightly is bumped only on a
+  `MINOR`+ release with a `Changed` changelog entry, never on a `PATCH`. CI runs
+  every gate on the pinned nightly (INV-TEST-17 determinism).
+- A revision bump that raises the required nightly follows the
+  [revision-bump workflow](#revision-bump-workflow) and updates
+  `rust-toolchain.toml` and the CI pin in the same change.
+
 ## Open Questions
 
 - OPEN QUESTION (owner: `area:security`): exact granularity of "audited surface"
