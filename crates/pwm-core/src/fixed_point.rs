@@ -119,8 +119,9 @@ impl BoundedInt {
     }
 
     /// The centered M31 encoding of the value (RFC-0002 §2). Always valid because
-    /// `value ∈ [lo, hi] ⊆ M31_SIGNED`.
-    pub fn encode(&self) -> M31 {
+    /// `value ∈ [lo, hi] ⊆ M31_SIGNED`. Named `to_field` to avoid colliding with
+    /// the canonical-serialization `encode` (`crate::serialize::CanonicalEncode`).
+    pub fn to_field(&self) -> M31 {
         encode(self.value)
     }
 

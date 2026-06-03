@@ -22,6 +22,7 @@ pub mod fixed_point;
 pub mod limb;
 pub mod obs;
 pub mod relation;
+pub mod serialize;
 pub mod tensor;
 
 pub use fixed_point::BoundedInt;

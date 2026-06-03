@@ -126,7 +126,7 @@ fn property_random_bounded_ops_stay_in_bounds_and_encode() {
         for r in [a.add(&b), a.sub(&b), a.mul(&b)] {
             let r = r.expect("small ranges stay in M31_SIGNED");
             assert!(r.lo() <= r.value() && r.value() <= r.hi());
-            assert_eq!(decode(r.encode()), r.value());
+            assert_eq!(decode(r.to_field()), r.value());
         }
     }
 }
