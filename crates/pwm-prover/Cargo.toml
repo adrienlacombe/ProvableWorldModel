@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "pwm-prover"
+description = "Prover CLI and orchestration: load manifest, run reference inference, build traces, drive the Stwo commit/challenge/proof flow, and emit the ProofArtifact bundle."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+pwm-core = { path = "../pwm-core" }
+pwm-air = { path = "../pwm-air" }
+pwm-circuits = { path = "../pwm-circuits" }
+pwm-export = { path = "../pwm-export" }
+
+[lints]
+workspace = true
