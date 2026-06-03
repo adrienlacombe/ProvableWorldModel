@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod commit;
 pub mod field;
 pub mod fixed_point;
 pub mod limb;
