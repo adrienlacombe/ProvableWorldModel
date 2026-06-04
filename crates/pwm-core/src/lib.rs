@@ -21,6 +21,7 @@ pub mod commit;
 pub mod field;
 pub mod fixed_point;
 pub mod limb;
+pub mod manifest;
 pub mod obs;
 pub mod public_input;
 pub mod relation;
