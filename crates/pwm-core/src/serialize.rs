@@ -63,7 +63,7 @@ impl<'a> Reader<'a> {
         Self { bytes, pos: 0 }
     }
 
-    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+    pub(crate) fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         let end = self.pos.checked_add(n).ok_or(DecodeError::LengthOverflow)?;
         if end > self.bytes.len() {
             return Err(DecodeError::UnexpectedEof {
@@ -338,7 +338,7 @@ impl CanonicalDecode for StatementType {
 
 /// Helper: encode/decode a fieldless enum as a `u8` discriminant.
 macro_rules! impl_enum_u8 {
-    ($ty:ty, $name:literal) => {
+    ($ty:ty, $name:expr) => {
         impl CanonicalEncode for $ty {
             fn encode(&self, out: &mut Vec<u8>) {
                 out.push(self.discriminant());
@@ -355,6 +355,8 @@ macro_rules! impl_enum_u8 {
         }
     };
 }
+
+pub(crate) use impl_enum_u8;
 
 impl_enum_u8!(Rounding, "Rounding");
 impl_enum_u8!(OverflowPolicy, "OverflowPolicy");
