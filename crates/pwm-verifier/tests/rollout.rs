@@ -34,6 +34,7 @@ fn predictor() -> Model {
         },
     ];
     let layer = LayerSpec {
+        pre_layernorm: None,
         linear_op_id: 1,
         weight: weight(10, 2, 4, &[1, 0, 1, 0, 0, 1, 0, 1]),
         bias: None,

@@ -61,6 +61,28 @@ pub struct RequantRec {
     pub rounding: u8,
 }
 
+/// Affine-free LayerNorm verified by exact integer recompute with a committed
+/// inverse-sqrt table (specs.md §8.3, [`crate::predictor::layernorm`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerNormRec {
+    /// Stable op id.
+    pub op_id: u32,
+    /// Committed inverse-sqrt table id.
+    pub table_id: u32,
+    /// Input vector.
+    pub input: Vec<i64>,
+    /// Claimed normalized output.
+    pub output: Vec<i64>,
+    /// Right-shift amount for the `(x − mean)·inv_std` requant.
+    pub shift: u32,
+    /// Clamp lower bound.
+    pub clamp_lo: i64,
+    /// Clamp upper bound.
+    pub clamp_hi: i64,
+    /// Rounding-mode discriminant.
+    pub rounding: u8,
+}
+
 /// A committed lookup-table read (GELU / SiLU / etc.) verified by exact replay
 /// against the table (specs.md §8.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +106,8 @@ pub enum OpRecord {
     Requant(RequantRec),
     /// Committed-table read (exact replay).
     Activation(ActivationRec),
+    /// Affine-free LayerNorm (exact recompute + committed inv-sqrt table).
+    LayerNorm(LayerNormRec),
 }
 
 impl OpRecord {
@@ -93,6 +117,7 @@ impl OpRecord {
             OpRecord::Linear(r) => &r.input,
             OpRecord::Requant(r) => &r.input,
             OpRecord::Activation(r) => &r.input,
+            OpRecord::LayerNorm(r) => &r.input,
         }
     }
 
@@ -102,6 +127,7 @@ impl OpRecord {
             OpRecord::Linear(r) => &r.output,
             OpRecord::Requant(r) => &r.output,
             OpRecord::Activation(r) => &r.output,
+            OpRecord::LayerNorm(r) => &r.output,
         }
     }
 
@@ -111,6 +137,7 @@ impl OpRecord {
             OpRecord::Linear(r) => r.op_id,
             OpRecord::Requant(r) => r.op_id,
             OpRecord::Activation(r) => r.op_id,
+            OpRecord::LayerNorm(r) => r.op_id,
         }
     }
 
@@ -120,6 +147,7 @@ impl OpRecord {
             OpRecord::Linear(_) => 0,
             OpRecord::Requant(_) => 1,
             OpRecord::Activation(_) => 2,
+            OpRecord::LayerNorm(_) => 3,
         }
     }
 
@@ -164,6 +192,19 @@ impl CanonicalEncode for ActivationRec {
     }
 }
 
+impl CanonicalEncode for LayerNormRec {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.op_id.encode(out);
+        self.table_id.encode(out);
+        self.input.encode(out);
+        self.output.encode(out);
+        (self.shift as u64).encode(out);
+        self.clamp_lo.encode(out);
+        self.clamp_hi.encode(out);
+        out.push(self.rounding);
+    }
+}
+
 impl CanonicalEncode for OpRecord {
     fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.tag());
@@ -171,6 +212,7 @@ impl CanonicalEncode for OpRecord {
             OpRecord::Linear(r) => r.encode(out),
             OpRecord::Requant(r) => r.encode(out),
             OpRecord::Activation(r) => r.encode(out),
+            OpRecord::LayerNorm(r) => r.encode(out),
         }
     }
 }

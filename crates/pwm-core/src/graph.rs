@@ -54,6 +54,21 @@ pub enum OpSpec {
         /// Committed table id.
         table_id: u32,
     },
+    /// Affine-free LayerNorm bound to an inverse-sqrt `table_id`.
+    LayerNorm {
+        /// Stable op id.
+        op_id: u32,
+        /// Committed inverse-sqrt table id.
+        table_id: u32,
+        /// Right-shift amount.
+        shift: u32,
+        /// Clamp lower bound.
+        clamp_lo: i64,
+        /// Clamp upper bound.
+        clamp_hi: i64,
+        /// Rounding-mode discriminant.
+        rounding: u8,
+    },
 }
 
 impl OpSpec {
@@ -62,6 +77,7 @@ impl OpSpec {
             OpSpec::Linear { .. } => 0,
             OpSpec::Requant { .. } => 1,
             OpSpec::Activation { .. } => 2,
+            OpSpec::LayerNorm { .. } => 3,
         }
     }
 
@@ -71,6 +87,7 @@ impl OpSpec {
             OpSpec::Linear { op_id, .. } => op_id,
             OpSpec::Requant { op_id, .. } => op_id,
             OpSpec::Activation { op_id, .. } => op_id,
+            OpSpec::LayerNorm { op_id, .. } => op_id,
         }
     }
 }
@@ -110,6 +127,21 @@ impl CanonicalEncode for OpSpec {
             OpSpec::Activation { op_id, table_id } => {
                 op_id.encode(out);
                 table_id.encode(out);
+            }
+            OpSpec::LayerNorm {
+                op_id,
+                table_id,
+                shift,
+                clamp_lo,
+                clamp_hi,
+                rounding,
+            } => {
+                op_id.encode(out);
+                table_id.encode(out);
+                (shift as u64).encode(out);
+                clamp_lo.encode(out);
+                clamp_hi.encode(out);
+                out.push(rounding);
             }
         }
     }

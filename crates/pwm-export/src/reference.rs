@@ -11,14 +11,34 @@
 
 use pwm_core::fixed_point::{requantize, Rounding};
 use pwm_core::graph::{GraphSpec, OpSpec};
+use pwm_core::predictor::layernorm;
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::{Scale, Tensor};
-use pwm_core::trace::{ActivationRec, LinearRec, OpRecord, RequantRec};
+use pwm_core::trace::{ActivationRec, LayerNormRec, LinearRec, OpRecord, RequantRec};
+
+/// An affine-free LayerNorm applied at the start of a layer (pre-norm).
+#[derive(Debug, Clone)]
+pub struct LayerNormSpec {
+    /// Op id.
+    pub op_id: u32,
+    /// Committed inverse-sqrt table id.
+    pub table_id: u32,
+    /// Right-shift amount for the `(x − mean)·inv_std` requant.
+    pub shift: u32,
+    /// Clamp lower bound.
+    pub clamp_lo: i64,
+    /// Clamp upper bound.
+    pub clamp_hi: i64,
+    /// Rounding mode.
+    pub rounding: Rounding,
+}
 
 /// One quantized layer: a biased linear, a requantization, and an optional
 /// committed-table activation.
 #[derive(Debug, Clone)]
 pub struct LayerSpec {
+    /// Optional affine-free LayerNorm applied before the linear (pre-norm).
+    pub pre_layernorm: Option<LayerNormSpec>,
     /// Op id of the linear.
     pub linear_op_id: u32,
     /// Weight matrix `W`, shape `[rows, cols]`, int8 values.
@@ -92,6 +112,11 @@ pub enum ReferenceError {
         /// The out-of-domain input.
         x: i64,
     },
+    /// A LayerNorm variance fell outside the committed inverse-sqrt table domain.
+    LayerNormDomain {
+        /// The op id.
+        op_id: u32,
+    },
 }
 
 impl Model {
@@ -114,6 +139,46 @@ impl Model {
         let mut trace: Vec<OpRecord> = Vec::new();
 
         for layer in &self.layers {
+            // --- Optional pre-LayerNorm (affine-free) ---
+            if let Some(ln) = &layer.pre_layernorm {
+                let table = self
+                    .tables
+                    .iter()
+                    .find(|t| t.table_id == ln.table_id)
+                    .ok_or(ReferenceError::MissingTable {
+                        table_id: ln.table_id,
+                    })?;
+                let ln_in = current.clone();
+                let ln_out = layernorm(
+                    &ln_in,
+                    table,
+                    ln.shift,
+                    ln.clamp_lo,
+                    ln.clamp_hi,
+                    ln.rounding,
+                )
+                .ok_or(ReferenceError::LayerNormDomain { op_id: ln.op_id })?;
+                ops.push(OpSpec::LayerNorm {
+                    op_id: ln.op_id,
+                    table_id: ln.table_id,
+                    shift: ln.shift,
+                    clamp_lo: ln.clamp_lo,
+                    clamp_hi: ln.clamp_hi,
+                    rounding: ln.rounding.discriminant(),
+                });
+                trace.push(OpRecord::LayerNorm(LayerNormRec {
+                    op_id: ln.op_id,
+                    table_id: ln.table_id,
+                    input: ln_in,
+                    output: ln_out.clone(),
+                    shift: ln.shift,
+                    clamp_lo: ln.clamp_lo,
+                    clamp_hi: ln.clamp_hi,
+                    rounding: ln.rounding.discriminant(),
+                }));
+                current = ln_out;
+            }
+
             // --- Linear: out = W·x + bias ---
             let shape = layer.weight.shape();
             if shape.len() != 2 {

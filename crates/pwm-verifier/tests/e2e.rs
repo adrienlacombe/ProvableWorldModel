@@ -57,6 +57,7 @@ fn model() -> Model {
         },
     ];
     let l1 = LayerSpec {
+        pre_layernorm: None,
         linear_op_id: 100,
         weight: weight(10, 4, 3, &[1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1]),
         bias: Some(bias(11, &[1, -1, 0, 2])),
@@ -69,6 +70,7 @@ fn model() -> Model {
         activation: Some((102, 0)),
     };
     let l2 = LayerSpec {
+        pre_layernorm: None,
         linear_op_id: 103,
         weight: weight(12, 2, 4, &[1, 1, 1, 1, 1, -1, 1, -1]),
         bias: None,

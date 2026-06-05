@@ -31,6 +31,7 @@ use pwm_core::fixed_point::{requantize, OverflowPolicy, Rounding};
 use pwm_core::freivalds::{check_linear_biased, precompute_v};
 use pwm_core::graph::OpSpec;
 use pwm_core::planning::{mse_cost, verify_argmin};
+use pwm_core::predictor::layernorm;
 use pwm_core::relation::StatementType;
 use pwm_core::tables::activation_tables_commitment;
 use pwm_core::trace::OpRecord;
@@ -181,6 +182,7 @@ pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
             OpRecord::Linear(r) => check_linear(artifact, r, &mut transcript)?,
             OpRecord::Requant(r) => check_requant(r)?,
             OpRecord::Activation(r) => check_activation(artifact, r)?,
+            OpRecord::LayerNorm(r) => check_layernorm(artifact, r)?,
         }
         current = record.output().to_vec();
     }
@@ -335,6 +337,24 @@ fn check_graph_conformance(artifact: &AuditArtifact) -> Result<(), VerifyError> 
             (OpSpec::Activation { op_id, table_id }, OpRecord::Activation(r)) => {
                 r.op_id == *op_id && r.table_id == *table_id
             }
+            (
+                OpSpec::LayerNorm {
+                    op_id,
+                    table_id,
+                    shift,
+                    clamp_lo,
+                    clamp_hi,
+                    rounding,
+                },
+                OpRecord::LayerNorm(r),
+            ) => {
+                r.op_id == *op_id
+                    && r.table_id == *table_id
+                    && r.shift == *shift
+                    && r.clamp_lo == *clamp_lo
+                    && r.clamp_hi == *clamp_hi
+                    && r.rounding == *rounding
+            }
             _ => false,
         };
         if !ok {
@@ -400,6 +420,28 @@ fn check_requant(r: &pwm_core::trace::RequantRec) -> Result<(), VerifyError> {
         if expected != claimed {
             return Err(VerifyError::ExactReplayMismatch { op_id: r.op_id });
         }
+    }
+    Ok(())
+}
+
+/// Exactly recompute the affine-free LayerNorm and compare to the record
+/// (specs.md §8.3, integer mean/variance + committed inverse-sqrt table).
+fn check_layernorm(
+    artifact: &AuditArtifact,
+    r: &pwm_core::trace::LayerNormRec,
+) -> Result<(), VerifyError> {
+    let table = artifact
+        .table(r.table_id)
+        .ok_or(VerifyError::MissingBinding("layernorm_table"))?;
+    let mode = Rounding::from_discriminant(r.rounding)
+        .ok_or(VerifyError::ExactReplayMismatch { op_id: r.op_id })?;
+    let expected = layernorm(&r.input, table, r.shift, r.clamp_lo, r.clamp_hi, mode).ok_or(
+        VerifyError::ActivationDomain {
+            table_id: r.table_id,
+        },
+    )?;
+    if expected != r.output {
+        return Err(VerifyError::ExactReplayMismatch { op_id: r.op_id });
     }
     Ok(())
 }
