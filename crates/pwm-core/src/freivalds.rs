@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: Apache-2.0
+//! Precomputed Freivalds verification of linear layers (specs.md §7).
+//!
+//! Key identity: for `z = W·x`, instead of recomputing `W·x` the verifier checks
+//! `v · x == r · z` in the audit field `F_p` (`p = 2^61 - 1`, [`crate::field::Fp61`]),
+//! where `v = rᵀW` is **precomputed once per weight matrix** and reused across
+//! every instance that applies the same `W` (candidate × rollout step × block).
+//! Because `rᵀ(Wx) = (rᵀW)x = v·x`, an honest `z` always passes; a wrong
+//! `z ≠ Wx` passes with probability ≤ `1/p` per check.
+//!
+//! The input `x` is the int8/int16 activation; `z` is the **i32 accumulator**
+//! (not requantized — requant is verified separately by the trace's `Requant`
+//! record, specs.md §8.1). The challenge `r` is squeezed from the Fiat-Shamir
+//! transcript after the trace commitment (non-interactive), or kept
+//! verifier-secret (interactive mode, V1).
+//!
+//! This is a pure-integer, `no_std` re-implementation of the CommitLLM
+//! `verilm-core::freivalds` kernel in the project's audit field.
+
+use alloc::vec::Vec;
+
+use crate::field::Fp61;
+
+/// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an int8 slice.
+pub fn dot_fp_i8(coeffs: &[Fp61], vals: &[i8]) -> Fp61 {
+    debug_assert_eq!(coeffs.len(), vals.len());
+    let mut acc = Fp61::ZERO;
+    for (&c, &x) in coeffs.iter().zip(vals.iter()) {
+        acc = acc.add(c.mul(Fp61::from_i64(x as i64)));
+    }
+    acc
+}
+
+/// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an i32 slice (int16
+/// activations or i32 accumulators).
+pub fn dot_fp_i32(coeffs: &[Fp61], vals: &[i32]) -> Fp61 {
+    debug_assert_eq!(coeffs.len(), vals.len());
+    let mut acc = Fp61::ZERO;
+    for (&c, &z) in coeffs.iter().zip(vals.iter()) {
+        acc = acc.add(c.mul(Fp61::from_i64(z as i64)));
+    }
+    acc
+}
+
+/// Precompute `v = rᵀ W` over `F_p`.
+///
+/// `weight` is row-major `W[row * cols + col]`, shape `(rows, cols)`. `r` has
+/// length `rows` (the output dimension); the returned `v` has length `cols` (the
+/// input dimension). Cost `O(rows·cols)`, paid **once** per weight matrix.
+pub fn precompute_v(r: &[Fp61], weight: &[i8], rows: usize, cols: usize) -> Vec<Fp61> {
+    assert_eq!(r.len(), rows, "r length must equal the output dimension");
+    assert_eq!(weight.len(), rows * cols, "weight size must be rows * cols");
+
+    let mut v = alloc::vec![Fp61::ZERO; cols];
+    for (row, &ri) in r.iter().enumerate() {
+        let base = row * cols;
+        for (col, vc) in v.iter_mut().enumerate() {
+            let w = Fp61::from_i64(weight[base + col] as i64);
+            *vc = vc.add(ri.mul(w));
+        }
+    }
+    v
+}
+
+/// Verify one matmul instance `z =? W·x`: returns true iff `v · x == r · z`.
+///
+/// `v = precompute_v(r, W, rows, cols)` (length `cols`), `x` is the int8 input
+/// (length `cols`), `r` is the challenge (length `rows`), `z` is the claimed i32
+/// accumulator output (length `rows`).
+pub fn check(v: &[Fp61], x: &[i8], r: &[Fp61], z: &[i32]) -> bool {
+    dot_fp_i8(v, x) == dot_fp_i32(r, z)
+}
+
+/// Like [`check`] but with an int16/i32 input `x` (int16 activations).
+pub fn check_i32(v: &[Fp61], x: &[i32], r: &[Fp61], z: &[i32]) -> bool {
+    dot_fp_i32(v, x) == dot_fp_i32(r, z)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r3() -> Vec<Fp61> {
+        alloc::vec![Fp61::new(10), Fp61::new(20), Fp61::new(30)]
+    }
+
+    #[test]
+    fn accepts_correct_output() {
+        // W = [[1,2],[3,4],[5,6]], x = [7,8]; z = W·x = [23, 53, 83].
+        let w: [i8; 6] = [1, 2, 3, 4, 5, 6];
+        let x: [i8; 2] = [7, 8];
+        let z: [i32; 3] = [23, 53, 83];
+        let r = r3();
+        let v = precompute_v(&r, &w, 3, 2);
+        assert!(check(&v, &x, &r, &z));
+    }
+
+    #[test]
+    fn rejects_wrong_output() {
+        let w: [i8; 6] = [1, 2, 3, 4, 5, 6];
+        let x: [i8; 2] = [7, 8];
+        let z: [i32; 3] = [23, 53, 84]; // 84 != 83
+        let r = r3();
+        let v = precompute_v(&r, &w, 3, 2);
+        assert!(!check(&v, &x, &r, &z));
+    }
+
+    #[test]
+    fn handles_negative_weights() {
+        // W = [[-1,2],[3,-4]], x=[3,7]; z = [-1*3+2*7, 3*3-4*7] = [11, -19].
+        let w: [i8; 4] = [-1, 2, 3, -4];
+        let x: [i8; 2] = [3, 7];
+        let z: [i32; 2] = [11, -19];
+        let r = alloc::vec![Fp61::new(5), Fp61::new(10)];
+        let v = precompute_v(&r, &w, 2, 2);
+        assert!(check(&v, &x, &r, &z));
+    }
+
+    #[test]
+    fn identity_matrix() {
+        let w: [i8; 9] = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        let x: [i8; 3] = [10, 20, 30];
+        let z: [i32; 3] = [10, 20, 30];
+        let r = alloc::vec![Fp61::new(42), Fp61::new(99), Fp61::new(7)];
+        let v = precompute_v(&r, &w, 3, 3);
+        assert!(check(&v, &x, &r, &z));
+    }
+}

@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `pwm-prover` — prover orchestration and CLI.
+//! `pwm-prover` — commit-and-audit prover orchestration and CLI.
 //!
-//! Loads the manifest, verifies `hash(manifest) == model_commitment` and the
-//! weight root *before* building any trace (INV-ARCH-05), runs the Rust
-//! fixed-point reference inference, assembles the preprocessed/main/interaction
-//! traces, drives the Stwo commit → challenge → interaction-trace → proof flow
-//! in the canonical Fiat-Shamir order, and emits the `ProofArtifact` bundle.
-//! For P2 it orchestrates the cost and argmin components over *all* candidates
-//! (RFC-0009 forbids partial proofs).
+//! The prover runs the model normally; it does not generate a proving circuit.
+//! The flow (specs.md §6, Phase 1):
 //!
-//! This crate is `std`; it sits at the top of the dependency DAG and is the
-//! only first-party crate to depend on both `pwm-air` and `pwm-export`.
+//! 1. verify `hash(manifest) == model_commitment` and the weight Merkle root
+//!    *before* any work;
+//! 2. canonicalize the public inputs and derive the public-input digest;
+//! 3. run the **exact integer reference inference** over the exported graph (the
+//!    `pwm-export` Rust reference), recording every accumulator and activation
+//!    into the [`pwm_core::trace`] op records;
+//! 4. Merkle-commit the trace (`trace_root`);
+//! 5. drive the Fiat-Shamir [`pwm_core::transcript`] to squeeze the Freivalds
+//!    challenge vectors and the audit selection;
+//! 6. emit the `AuditArtifact { commitments, public_input, openings,
+//!    claimed_outputs }`.
 //!
-//! Workspace skeleton (issue #23). The `cli`, `trace_builder`, `prove_rollout`,
-//! and `prove_planning` modules land in #62, #64, and the per-statement issues.
+//! This crate is `std` (host-side tooling) and sits at the top of the dependency
+//! DAG; it depends on `pwm-core` and `pwm-export` (for the Rust reference) only —
+//! no proving substrate. The `cli`, `trace_builder`, `prove_step`,
+//! `prove_rollout`, and `prove_planning` modules land per the backlog (M3–M6).
 
-// DAG edges (docs/spec/01-architecture.md#module-boundaries).
-use pwm_air as _;
-use pwm_circuits as _;
+// DAG edges (specs.md §11.1).
 use pwm_core as _;
 use pwm_export as _;
-// Vendored proving substrate (third_party/stwo, RFC-0015). Linked here to prove
-// the path-dependency wiring builds; the prover flow uses it from #62 onward.
-use stwo as _;

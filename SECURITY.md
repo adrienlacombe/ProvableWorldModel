@@ -28,8 +28,7 @@ artifact), and the security property you believe is violated.
 
 V0 is a succinct validity proof and is **not** zero-knowledge. Reports asserting
 a privacy break against V0 are out of scope unless a specific relation explicitly
-advertised a hiding property. See
-[docs/spec/06-security.md](docs/spec/06-security.md#privacy-and-zk).
+advertised a hiding property. See [specs.md](specs.md#13-soundness-and-threat-model).
 
 ## Process and disclosure
 
@@ -37,13 +36,11 @@ Maintainers acknowledge a report within a target of five business days and
 propose a remediation and disclosure timeline. Coordinated disclosure is the
 default; an embargo holds until a fix ships or by mutual agreement. Fixes that
 change proof semantics mint a new `relation_id`; see
-[docs/spec/09-release-and-versioning.md](docs/spec/09-release-and-versioning.md#relation-versioning).
+[specs.md](specs.md#13-soundness-and-threat-model).
 
 No public soundness claim is made for any relation that has not passed the
-security-review gate defined in
-[docs/spec/07-testing-strategy.md](docs/spec/07-testing-strategy.md) and
-[docs/rfcs/RFC-0013-testing-fuzzing-and-audit-strategy.md](docs/rfcs/RFC-0013-testing-fuzzing-and-audit-strategy.md).
-That gate signs off against the
-[soundness and binding checklist](docs/security/soundness-binding-checklist.md),
-which maps every binding (B1–B15) and range-safety requirement to its enforcing
-RFC, issue, verifier rejection, and test.
+security-review gate; the threat model, binding requirements, and the "no
+attention hole" argument are in [specs.md](specs.md#13-soundness-and-threat-model),
+and the testing/mutation gates in [specs.md](specs.md#15-testing-strategy). The
+pre-pivot soundness/binding checklist (B1–B15) is archived at
+[docs/legacy-stark/security/soundness-binding-checklist.md](docs/legacy-stark/security/soundness-binding-checklist.md).

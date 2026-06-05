@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `pwm-export` — the export/quantize pipeline (Rust side).
 //!
-//! Holds the canonical Rust fixed-point reference inference — which must match
-//! every `pwm-air` component bit-for-bit — and the Python↔Rust↔golden parity
-//! harness. Graph extraction, quantization, and the manifest writer live in the
-//! colocated Python subpackage; this Rust side never imports a Python runtime.
-//! Export is an offline, trusted preprocessing step that produces a *committed*
-//! manifest; neither the prover nor the verifier re-runs it.
+//! Holds the canonical Rust **integer reference inference** — which the prover's
+//! trace builder replays and the verifier exactly recomputes (specs.md §3, §8) —
+//! and the Python↔Rust↔golden parity harness. Graph extraction, quantization,
+//! BatchNorm folding, the manifest writer, and the stable-worldmodel data adapter
+//! live in the colocated Python subpackage; this Rust side never imports a Python
+//! runtime. Export is an offline, trusted preprocessing step that produces a
+//! *committed* manifest; neither the prover nor the verifier re-runs it.
 //!
-//! This crate is `std` (it is host-side tooling) and is a leaf of the
-//! dependency DAG: nothing depends on it, which keeps PyTorch out of the
-//! verifier (INV-ARCH-02).
+//! This crate is `std` (host-side tooling) and is a leaf of the dependency DAG:
+//! nothing depends on it, which keeps PyTorch out of the verifier (INV-ARCH-02).
 //!
-//! Workspace skeleton (issue #23). The `reference` and `parity_tests` modules
-//! land in #37 and #39 onward.
+//! The `reference`, `parity_tests`, and data-adapter modules land per the
+//! backlog (M2).
 
-// DAG edge (docs/spec/01-architecture.md#module-boundaries): depends on pwm-core.
+// DAG edge (specs.md §11.1): depends on pwm-core.
 use pwm_core as _;

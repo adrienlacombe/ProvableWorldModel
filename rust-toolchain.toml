@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Pinned build toolchain for reproducible builds (docs/spec/09-release-and-versioning.md#msrv,
-# RFC-0015). The vendored proving substrate (Stwo v2.2.0, stwo-circuits v0.1.0)
-# requires nightly Rust, so the project pins an exact nightly rather than a stable
-# MSRV for the V0 line. This pin is bumped only on a MINOR+ release with a
-# `Changed` changelog entry. See the toolchain decision in
-# docs/rfcs/RFC-0015-third-party-vendoring-and-pinning.md.
+# Pinned build toolchain for reproducible builds. Post-pivot the project uses the
+# CommitLLM commit-and-audit backend, which has no nightly-only dependency (the
+# vendored Stwo prover that required nightly was removed). The workspace builds on
+# stable Rust; pin a stable channel and bump only on a MINOR+ release with a
+# `Changed` changelog entry. See specs.md (toolchain).
 [toolchain]
-channel = "nightly-2025-07-14"
+channel = "stable"
 components = ["rustfmt", "clippy"]

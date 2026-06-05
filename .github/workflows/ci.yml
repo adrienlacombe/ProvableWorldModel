@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Merge-gate pipeline (docs/spec/07-testing-strategy.md#ci-gates, RFC-0013).
-# Every job below must pass for a PR to merge (INV-TEST-16). The pipeline is
-# pinned to the project toolchain (the nightly in rust-toolchain.toml) for
-# determinism (INV-TEST-17): the vendored proving substrate requires nightly
-# (RFC-0015 toolchain decision). Perf-budget (#75) and golden-parity (export
-# harness) gates are wired by their own issues.
+# Merge-gate pipeline (specs.md §15). Every job below must pass for a PR to
+# merge. The pipeline is pinned to the project toolchain (the stable channel in
+# rust-toolchain.toml) for determinism; post-pivot there is no nightly-only
+# proving substrate. Golden-parity (export harness) gates are wired by their own
+# issues (backlog M2/M7).
 name: CI
 
 on:
@@ -24,7 +23,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Pinned project toolchain (must match rust-toolchain.toml).
-  TOOLCHAIN: "nightly-2025-07-14"
+  TOOLCHAIN: "stable"
 
 jobs:
   format:
@@ -34,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -45,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
@@ -57,7 +56,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features --locked
 
@@ -68,14 +67,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
-      # Canonical gate (docs/spec/07-testing-strategy.md#ci-gates): the verifier
-      # chain compiles with no default features, mirroring Stwo's own
-      # `ensure-verifier-no_std` pattern. The vendored Stwo (RFC-0015) has a
-      # non-optional std-only dependency (dashmap), so a fully bare-metal target
-      # build is not supported by the substrate; `--no-default-features` is the
-      # no_std contract the spec defines and the verifier chain keeps.
+      # Canonical gate (specs.md §11.2): the verifier chain compiles with no
+      # default features and no floating point. Post-pivot pwm-core and
+      # pwm-verifier are #![no_std] with only blake2 (no_std) as a dependency, so
+      # the no_std contract holds without any proving substrate.
       - run: cargo build -p pwm-verifier --no-default-features --locked
       - run: cargo build -p pwm-core --no-default-features --locked
 
@@ -86,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
       # rustdoc for the public API; -D warnings fails on broken intra-doc links.
       - run: cargo doc --workspace --no-deps --locked
@@ -115,7 +112,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
       # Skeleton scope: the runner evaluates every registered campaign (only the
       # empty campaign exists yet) and exits non-zero on a survivor or a score

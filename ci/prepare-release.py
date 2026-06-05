@@ -30,7 +30,7 @@ ROOT_CARGO = Path("Cargo.toml")
 CHANGELOG = Path("CHANGELOG.md")
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
-FIRST_PARTY = ["pwm-core", "pwm-circuits", "pwm-air", "pwm-export", "pwm-prover", "pwm-verifier"]
+FIRST_PARTY = ["pwm-core", "pwm-export", "pwm-prover", "pwm-verifier", "pwm-testkit"]
 
 
 def parse_core(version: str) -> tuple[int, int, int]:

@@ -3,28 +3,21 @@
 # Workspace manifest for ProvableWorldModel.
 #
 # Pins the shared package metadata (MSRV, edition, license), the workspace-wide
-# lint configuration, and the build profiles. The six first-party crates under
-# `crates/` partition the system along the strict layering boundary defined in
-# docs/spec/01-architecture.md#crate-layout. Vendored dependencies live under
-# `third_party/` and are pinned per RFC-0015; they are intentionally absent from
-# this skeleton (see issues #24, #25).
+# lint configuration, and the build profiles. Post-pivot (CommitLLM commit-and-
+# audit backend) the system is five first-party crates under `crates/`:
+# pwm-core, pwm-export, pwm-prover, pwm-verifier, pwm-testkit. The STARK AIR /
+# circuits crates and the vendored Stwo prover were removed; see specs.md.
 
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-# Vendored proving substrate (RFC-0015) is its own upstream workspace; it is not
-# a member of ours. First-party crates depend on individual vendored crates by
-# path (the only permitted source, INV-RFC0015-01); the vendored workspace keeps
-# its own manifest/lockfile and is excluded here so cargo does not absorb it.
-exclude = ["third_party/stwo", "third_party/stwo-circuits"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# Informational floor for the first-party crates only. The authoritative build
-# toolchain is the pinned nightly in rust-toolchain.toml: the vendored proving
-# substrate requires nightly, so there is no stable MSRV for the workspace during
-# V0 (RFC-0015 toolchain decision; docs/spec/09-release-and-versioning.md#msrv).
+# MSRV for the first-party crates. Post-pivot the workspace builds on stable Rust
+# (the nightly-only Stwo substrate was removed), so this is the authoritative
+# floor alongside the stable channel pinned in rust-toolchain.toml.
 rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/AbdelStark/ProvableWorldModel"
@@ -36,17 +29,11 @@ authors = ["ProvableWorldModel contributors"]
 # (ci/prepare-release.py) bumps these in lockstep with `workspace.package.version`.
 [workspace.dependencies]
 pwm-core = { path = "crates/pwm-core", version = "0.1.0" }
-pwm-circuits = { path = "crates/pwm-circuits", version = "0.1.0" }
-pwm-air = { path = "crates/pwm-air", version = "0.1.0" }
 pwm-export = { path = "crates/pwm-export", version = "0.1.0" }
 pwm-prover = { path = "crates/pwm-prover", version = "0.1.0" }
 pwm-verifier = { path = "crates/pwm-verifier", version = "0.1.0" }
-# Vendored proving substrate (RFC-0015). Path dependencies only — never a
-# crates.io or git source for a Stwo package (INV-RFC0015-01). The vendored tree
-# is pinned at stwo v2.2.0 (third_party/stwo/REVISION).
-stwo = { path = "third_party/stwo/crates/stwo", version = "2.2.0", default-features = false }
-# Blake2s commitment / digest primitive for V0 (RFC-0014 §2–§3). no_std; not a
-# proving dependency, so it is permitted in the pwm-core trust root (INV-ARCH-01).
+# Blake2s commitment / digest / transcript primitive (specs.md §4, §6). no_std;
+# the only crypto dependency in the pwm-core trust root (INV-ARCH-01).
 blake2 = { version = "0.10", default-features = false }
 # Test-only third-party dependencies (used by pwm-testkit and pwm-core dev-deps).
 serde = { version = "1", features = ["derive"] }

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "pwm-verifier"
-description = "Verify a ProofArtifact: parse and digest public input, check relation_id support, verify the Stwo proof, enforce application-level checks. Library-first, no_std-clean, with no dependency on pwm-export or any PyTorch/Python runtime (INV-ARCH-02)."
+description = "Verify an AuditArtifact: digest public input, check relation_id + commitments, Freivalds-check the linear layers, exactly recompute requant/nonlinear/attention, and check rollout/cost/argmin. Library-first, no_std-clean, float-free, with no dependency on pwm-export or any PyTorch/Python runtime (INV-ARCH-02)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,6 @@ authors.workspace = true
 
 [dependencies]
 pwm-core = { workspace = true }
-pwm-air = { workspace = true }
-pwm-circuits = { workspace = true }
 
 [lints]
 workspace = true
