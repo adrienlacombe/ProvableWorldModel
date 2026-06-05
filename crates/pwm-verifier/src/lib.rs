@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use pwm_core::audit::{
     audit_transcript, next_freivalds_r, output_tensor, relation_id, AuditArtifact, PlanningProof,
-    RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
+    RolloutProof, RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
 };
 use pwm_core::commit::{
     claimed_output_commitment, weights_root, ModelBinding, PlannerBinding, QuantBinding,
@@ -97,6 +97,11 @@ pub enum VerifyError {
     },
     /// The argmin selection was unsound (lower cost, wrong index, or tie-break).
     ArgminViolation,
+    /// A rollout step's input window or predicted latent broke the recurrence.
+    RolloutWiring {
+        /// The offending rollout step.
+        step: usize,
+    },
 }
 
 /// Verify a commit-and-audit proof. Returns `Ok(())` iff every check passes.
@@ -241,6 +246,45 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
         proof.selected_cost,
     )
     .map_err(|_| VerifyError::ArgminViolation)
+}
+
+/// Verify an autoregressive rollout proof (P1): every step is a sound P0 proof,
+/// and the recurrence wiring holds — step `t`'s input is exactly the flattened
+/// trailing `history_size`-window of latents (initial history + previously
+/// predicted latents), and each step's output is the recorded trajectory latent
+/// (specs.md §9).
+pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
+    let h = proof.history_size as usize;
+    if h == 0 || proof.initial_latents.len() < h || proof.steps.len() != proof.trajectory.len() {
+        return Err(VerifyError::RolloutWiring { step: 0 });
+    }
+    let mut latents = proof.initial_latents.clone();
+    for (step, artifact) in proof.steps.iter().enumerate() {
+        // 1. The step is a sound P0 proof over the committed model.
+        verify(artifact).map_err(|_| VerifyError::Candidate { index: step })?;
+        // 2. Its input is the flattened trailing window of latents at this step.
+        let window: Vec<i64> = latents[latents.len() - h..]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        let got = decode_public_input(&artifact.public_input)?;
+        if got != window {
+            return Err(VerifyError::RolloutWiring { step });
+        }
+        // 3. Its output is the recorded trajectory latent; append for the next step.
+        let next: Vec<i64> = artifact
+            .claimed_output
+            .data()
+            .iter()
+            .map(|c| c.value())
+            .collect();
+        if next != proof.trajectory[step] {
+            return Err(VerifyError::RolloutWiring { step });
+        }
+        latents.push(next);
+    }
+    Ok(())
 }
 
 /// Each trace record must match the graph op at the same index by kind, ids, and

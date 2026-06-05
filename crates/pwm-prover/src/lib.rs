@@ -13,8 +13,8 @@
 //! this per the backlog (M3–M6).
 
 use pwm_core::audit::{
-    output_tensor, relation_id, AuditArtifact, OutputTensorError, PlanningProof, ARTIFACT_VERSION,
-    RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
+    output_tensor, relation_id, AuditArtifact, OutputTensorError, PlanningProof, RolloutProof,
+    ARTIFACT_VERSION, RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
 };
 use pwm_core::commit::{
     claimed_output_commitment, weights_root, ModelBinding, PlannerBinding, QuantBinding,
@@ -126,13 +126,58 @@ pub fn prove_feedforward(
     })
 }
 
-/// Failure building a planning proof.
+/// Failure building a planning or rollout proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
-    /// A candidate's P0 proof could not be produced.
+    /// A candidate's / step's P0 proof could not be produced.
     Prove(ProveError),
     /// No candidate action sequences were supplied.
     NoCandidates,
+    /// Fewer initial latents than the history window, or a zero window/horizon.
+    BadHistory,
+}
+
+/// Prove an autoregressive rollout (`StatementType::P1Rollout`): predict the next
+/// latent from the trailing `history_size`-window of latents, append it, and
+/// repeat for `horizon` steps. Each step is a P0 proof; the window for step `t`
+/// is the flattened latents available at step `t` (specs.md §9).
+pub fn prove_rollout(
+    model: &Model,
+    initial_latents: &[Vec<i64>],
+    history_size: usize,
+    horizon: usize,
+    out_binding: OutputBinding,
+) -> Result<RolloutProof, PlanError> {
+    if history_size == 0 || horizon == 0 || initial_latents.len() < history_size {
+        return Err(PlanError::BadHistory);
+    }
+    let mut latents: Vec<Vec<i64>> = initial_latents.to_vec();
+    let mut steps = Vec::with_capacity(horizon);
+    let mut trajectory = Vec::with_capacity(horizon);
+    for _ in 0..horizon {
+        let window: Vec<i64> = latents[latents.len() - history_size..]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        let artifact = prove_feedforward(model, &window, out_binding).map_err(PlanError::Prove)?;
+        let next: Vec<i64> = artifact
+            .claimed_output
+            .data()
+            .iter()
+            .map(|c| c.value())
+            .collect();
+        latents.push(next.clone());
+        trajectory.push(next);
+        steps.push(artifact);
+    }
+    Ok(RolloutProof {
+        artifact_version: ARTIFACT_VERSION,
+        steps,
+        initial_latents: initial_latents.to_vec(),
+        history_size: history_size as u32,
+        trajectory,
+    })
 }
 
 /// Prove fixed-candidate planning (`StatementType::P2FixedCandidatePlanning`, the

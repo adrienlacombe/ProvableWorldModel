@@ -114,6 +114,26 @@ pub struct PlanningProof {
     pub selected_cost: i64,
 }
 
+/// An autoregressive rollout proof (P1): one P0 [`AuditArtifact`] per step, where
+/// each step predicts the next latent from the trailing `history_size`-window of
+/// latents (initial history followed by previously predicted latents). The
+/// verifier checks each step's P0 proof and the recurrence wiring — step `t`'s
+/// input is exactly the flattened window of latents available at step `t`
+/// (specs.md §9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloutProof {
+    /// Wire-format version.
+    pub artifact_version: u32,
+    /// One P0 proof per rollout step.
+    pub steps: Vec<AuditArtifact>,
+    /// The initial latent history (each entry a latent of dimension `D`).
+    pub initial_latents: Vec<Vec<i64>>,
+    /// The window size `H` (number of trailing latents fed to each step).
+    pub history_size: u32,
+    /// The predicted latents, one per step (the rolled-out trajectory).
+    pub trajectory: Vec<Vec<i64>>,
+}
+
 /// Build the shared Fiat-Shamir transcript bound to the public input and the
 /// trace root. The public-input digest already binds the relation id and the
 /// model/quantization/planner/output commitments (they are fields of
