@@ -42,6 +42,27 @@ pub fn dot_fp_i32(coeffs: &[Fp61], vals: &[i32]) -> Fp61 {
     acc
 }
 
+/// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an i64 slice. Trace records
+/// store activation/accumulator vectors uniformly as `i64`, so this is the
+/// general dot used by the verifier's Freivalds checks.
+pub fn dot_fp_i64(coeffs: &[Fp61], vals: &[i64]) -> Fp61 {
+    debug_assert_eq!(coeffs.len(), vals.len());
+    let mut acc = Fp61::ZERO;
+    for (&c, &z) in coeffs.iter().zip(vals.iter()) {
+        acc = acc.add(c.mul(Fp61::from_i64(z)));
+    }
+    acc
+}
+
+/// Verify a linear op with bias, `out = W·x + bias`, in one Freivalds equation:
+/// `r·out == v·x + r·bias`, where `v = rᵀW`. All vectors are `i64`. This is the
+/// check the verifier runs per `Linear` trace record (specs.md §7).
+pub fn check_linear_biased(v: &[Fp61], x: &[i64], bias: &[i64], r: &[Fp61], out: &[i64]) -> bool {
+    let lhs = dot_fp_i64(v, x).add(dot_fp_i64(r, bias));
+    let rhs = dot_fp_i64(r, out);
+    lhs == rhs
+}
+
 /// Precompute `v = rᵀ W` over `F_p`.
 ///
 /// `weight` is row-major `W[row * cols + col]`, shape `(rows, cols)`. `r` has

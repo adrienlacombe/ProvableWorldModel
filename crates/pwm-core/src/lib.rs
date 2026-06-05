@@ -17,16 +17,19 @@
 
 extern crate alloc;
 
+pub mod audit;
 pub mod commit;
 pub mod field;
 pub mod fixed_point;
 pub mod freivalds;
+pub mod graph;
 pub mod limb;
 pub mod manifest;
 pub mod obs;
 pub mod public_input;
 pub mod relation;
 pub mod serialize;
+pub mod tables;
 pub mod tensor;
 pub mod trace;
 pub mod transcript;

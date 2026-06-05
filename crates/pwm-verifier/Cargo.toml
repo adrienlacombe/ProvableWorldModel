@@ -12,5 +12,11 @@ authors.workspace = true
 [dependencies]
 pwm-core = { workspace = true }
 
+[dev-dependencies]
+# End-to-end accept/reject tests drive the real prover + reference; these are
+# test-only and do not enter the verifier's dependency graph (INV-ARCH-02).
+pwm-prover = { workspace = true }
+pwm-export = { workspace = true }
+
 [lints]
 workspace = true

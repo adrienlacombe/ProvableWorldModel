@@ -12,8 +12,8 @@
 //! This crate is `std` (host-side tooling) and is a leaf of the dependency DAG:
 //! nothing depends on it, which keeps PyTorch out of the verifier (INV-ARCH-02).
 //!
-//! The `reference`, `parity_tests`, and data-adapter modules land per the
+//! The `reference` module (integer reference inference + trace builder) lands
+//! here; quantization, the manifest writer, and the data adapter follow per the
 //! backlog (M2).
 
-// DAG edge (specs.md §11.1): depends on pwm-core.
-use pwm_core as _;
+pub mod reference;
