@@ -9,8 +9,8 @@ use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::{Dtype, Scale, Tensor};
 use pwm_core::trace::OpRecord;
 use pwm_export::reference::{LayerSpec, Model};
-use pwm_prover::{prove_feedforward, OutputBinding};
-use pwm_verifier::{verify, VerifyError};
+use pwm_prover::{prove_feedforward, prove_planning, OutputBinding};
+use pwm_verifier::{verify, verify_planning, VerifyError};
 
 fn weight(id: u32, rows: u32, cols: u32, vals: &[i8]) -> Tensor {
     let data = vals
@@ -192,4 +192,70 @@ fn reject_tampered_public_input() {
         hist[0] = pwm_core::field::encode(42);
     }
     assert_eq!(verify(&a), Err(VerifyError::PublicInputMismatch));
+}
+
+// --- P2 fixed-candidate planning (the V0 headline) ---
+
+fn candidates() -> Vec<Vec<i64>> {
+    // costs vs goal [4,-1]: cand0 -> [4,-1] cost 0; cand1 -> [0,0] cost 17;
+    // cand2 -> [4,-1] cost 0 (ties cand0, but cand0 is earlier).
+    vec![vec![1, 2, 3], vec![0, 0, 0], vec![3, 2, 1]]
+}
+
+fn goal() -> Vec<i64> {
+    vec![4, -1]
+}
+
+#[test]
+fn accept_valid_planning_proof() {
+    let proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    assert_eq!(proof.costs, vec![0, 17, 0]);
+    assert_eq!(proof.selected_index, 0); // first minimum
+    assert_eq!(proof.selected_cost, 0);
+    assert_eq!(verify_planning(&proof), Ok(()));
+}
+
+#[test]
+fn reject_planning_tie_break_violation() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Candidate 2 also has cost 0, but candidate 0 is the earliest minimum.
+    proof.selected_index = 2;
+    proof.selected_cost = proof.costs[2];
+    assert_eq!(verify_planning(&proof), Err(VerifyError::ArgminViolation));
+}
+
+#[test]
+fn reject_planning_not_minimum() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    proof.selected_index = 1; // cost 17 is not the minimum
+    proof.selected_cost = proof.costs[1];
+    assert_eq!(verify_planning(&proof), Err(VerifyError::ArgminViolation));
+}
+
+#[test]
+fn reject_planning_forged_cost() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Claim candidate 1 is cheap without changing its (verified) output.
+    proof.costs[1] = -5;
+    assert!(matches!(
+        verify_planning(&proof),
+        Err(VerifyError::CostMismatch { index: 1 })
+    ));
+}
+
+#[test]
+fn reject_planning_tampered_candidate() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Tamper a candidate's claimed output -> its P0 proof fails to verify.
+    let data = vec![
+        BoundedInt::exact(123).unwrap(),
+        BoundedInt::exact(0).unwrap(),
+    ];
+    let co = &proof.candidates[1].claimed_output;
+    proof.candidates[1].claimed_output =
+        Tensor::new(co.tensor_id(), co.shape().to_vec(), co.scale_id(), data).unwrap();
+    assert_eq!(
+        verify_planning(&proof),
+        Err(VerifyError::Candidate { index: 1 })
+    );
 }

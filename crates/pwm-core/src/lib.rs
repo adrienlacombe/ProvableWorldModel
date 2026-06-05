@@ -26,6 +26,7 @@ pub mod graph;
 pub mod limb;
 pub mod manifest;
 pub mod obs;
+pub mod planning;
 pub mod public_input;
 pub mod relation;
 pub mod serialize;

@@ -93,6 +93,27 @@ impl CanonicalEncode for AuditArtifact {
     }
 }
 
+/// A fixed-candidate planning proof (P2 = V0): a P0 [`AuditArtifact`] per
+/// candidate over the same committed model, the public goal latent, the per-
+/// candidate goal costs, and the selected candidate. The verifier checks each
+/// candidate proof, recomputes each cost from the verified output and the goal,
+/// and checks the argmin selection (specs.md §10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningProof {
+    /// Wire-format version.
+    pub artifact_version: u32,
+    /// One P0 proof per candidate (same model, different input).
+    pub candidates: Vec<AuditArtifact>,
+    /// The public goal latent (integer values).
+    pub goal: Vec<i64>,
+    /// Per-candidate goal-MSE costs (index-aligned with `candidates`).
+    pub costs: Vec<i64>,
+    /// The selected (minimum-cost) candidate index.
+    pub selected_index: u32,
+    /// The cost of the selected candidate.
+    pub selected_cost: i64,
+}
+
 /// Build the shared Fiat-Shamir transcript bound to the public input and the
 /// trace root. The public-input digest already binds the relation id and the
 /// model/quantization/planner/output commitments (they are fields of

@@ -13,14 +13,15 @@
 //! this per the backlog (M3–M6).
 
 use pwm_core::audit::{
-    output_tensor, relation_id, AuditArtifact, OutputTensorError, ARTIFACT_VERSION, RELATION_MLP,
-    RELATION_VERSION, SERIALIZATION_VERSION,
+    output_tensor, relation_id, AuditArtifact, OutputTensorError, PlanningProof, ARTIFACT_VERSION,
+    RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
 };
 use pwm_core::commit::{
     claimed_output_commitment, weights_root, ModelBinding, PlannerBinding, QuantBinding,
 };
 use pwm_core::field::{try_encode, OutOfRange};
 use pwm_core::fixed_point::{OverflowPolicy, Rounding};
+use pwm_core::planning::{argmin, mse_cost};
 use pwm_core::public_input::PublicInput;
 use pwm_core::relation::StatementType;
 use pwm_core::tables::activation_tables_commitment;
@@ -122,5 +123,51 @@ pub fn prove_feedforward(
         scales: model.scales.clone(),
         trace: run.trace,
         claimed_output,
+    })
+}
+
+/// Failure building a planning proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanError {
+    /// A candidate's P0 proof could not be produced.
+    Prove(ProveError),
+    /// No candidate action sequences were supplied.
+    NoCandidates,
+}
+
+/// Prove fixed-candidate planning (`StatementType::P2FixedCandidatePlanning`, the
+/// V0 deliverable): roll each candidate input through the committed model, score
+/// each final latent against `goal` by exact integer MSE, and select the minimum
+/// under smallest-index tie-breaking. Composes one P0 proof per candidate.
+pub fn prove_planning(
+    model: &Model,
+    candidate_inputs: &[Vec<i64>],
+    goal: &[i64],
+    out_binding: OutputBinding,
+) -> Result<PlanningProof, PlanError> {
+    if candidate_inputs.is_empty() {
+        return Err(PlanError::NoCandidates);
+    }
+    let mut candidates = Vec::with_capacity(candidate_inputs.len());
+    let mut costs = Vec::with_capacity(candidate_inputs.len());
+    for input in candidate_inputs {
+        let artifact = prove_feedforward(model, input, out_binding).map_err(PlanError::Prove)?;
+        let output: Vec<i64> = artifact
+            .claimed_output
+            .data()
+            .iter()
+            .map(|c| c.value())
+            .collect();
+        costs.push(mse_cost(&output, goal));
+        candidates.push(artifact);
+    }
+    let (selected_index, selected_cost) = argmin(&costs).expect("non-empty costs");
+    Ok(PlanningProof {
+        artifact_version: ARTIFACT_VERSION,
+        candidates,
+        goal: goal.to_vec(),
+        costs,
+        selected_index: selected_index as u32,
+        selected_cost,
     })
 }

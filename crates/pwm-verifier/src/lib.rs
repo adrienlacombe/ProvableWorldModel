@@ -20,8 +20,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use pwm_core::audit::{
-    audit_transcript, next_freivalds_r, output_tensor, relation_id, AuditArtifact, RELATION_MLP,
-    RELATION_VERSION, SERIALIZATION_VERSION,
+    audit_transcript, next_freivalds_r, output_tensor, relation_id, AuditArtifact, PlanningProof,
+    RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
 };
 use pwm_core::commit::{
     claimed_output_commitment, weights_root, ModelBinding, PlannerBinding, QuantBinding,
@@ -30,6 +30,7 @@ use pwm_core::field::Fp61;
 use pwm_core::fixed_point::{requantize, OverflowPolicy, Rounding};
 use pwm_core::freivalds::{check_linear_biased, precompute_v};
 use pwm_core::graph::OpSpec;
+use pwm_core::planning::{mse_cost, verify_argmin};
 use pwm_core::relation::StatementType;
 use pwm_core::tables::activation_tables_commitment;
 use pwm_core::trace::OpRecord;
@@ -82,6 +83,20 @@ pub enum VerifyError {
     OutputCommitmentMismatch,
     /// A value could not be represented (e.g. building the output tensor).
     Encoding,
+    /// A planning proof had no candidates.
+    NoCandidates,
+    /// A candidate's P0 proof failed to verify.
+    Candidate {
+        /// Candidate index.
+        index: usize,
+    },
+    /// A recomputed candidate cost did not match the claimed cost.
+    CostMismatch {
+        /// Candidate index.
+        index: usize,
+    },
+    /// The argmin selection was unsound (lower cost, wrong index, or tie-break).
+    ArgminViolation,
 }
 
 /// Verify a commit-and-audit proof. Returns `Ok(())` iff every check passes.
@@ -189,6 +204,43 @@ pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
     }
 
     Ok(())
+}
+
+/// Verify a fixed-candidate planning proof (P2 = V0): every candidate's P0 proof
+/// verifies, every cost is the exact goal-MSE of that candidate's verified output,
+/// and the selected candidate is the minimum under smallest-index tie-breaking
+/// (specs.md §10). All candidates are scored — proving only the winner is unsound.
+pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
+    if proof.candidates.is_empty() {
+        return Err(VerifyError::NoCandidates);
+    }
+    if proof.costs.len() != proof.candidates.len() {
+        return Err(VerifyError::ArgminViolation);
+    }
+    for (index, candidate) in proof.candidates.iter().enumerate() {
+        // 1. Each candidate is a sound P0 proof over the committed model.
+        verify(candidate).map_err(|_| VerifyError::Candidate { index })?;
+        // 2. Its cost is the exact goal-MSE of its (now verified) output.
+        let output: Vec<i64> = candidate
+            .claimed_output
+            .data()
+            .iter()
+            .map(|c| c.value())
+            .collect();
+        if output.len() != proof.goal.len() {
+            return Err(VerifyError::CostMismatch { index });
+        }
+        if mse_cost(&output, &proof.goal) != proof.costs[index] {
+            return Err(VerifyError::CostMismatch { index });
+        }
+    }
+    // 3. The selection is the sound argmin.
+    verify_argmin(
+        &proof.costs,
+        proof.selected_index as usize,
+        proof.selected_cost,
+    )
+    .map_err(|_| VerifyError::ArgminViolation)
 }
 
 /// Each trace record must match the graph op at the same index by kind, ids, and
