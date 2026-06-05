@@ -17,7 +17,12 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+
+use pwm_core::block::{Block, BlockOp};
+use pwm_core::predictor::{gate_vec, modulate_vec, residual_add};
+use pwm_core::tensor::Tensor;
 
 use pwm_core::audit::{
     audit_transcript, next_freivalds_r, output_tensor, relation_id, AuditArtifact, PlanningProof,
@@ -102,6 +107,16 @@ pub enum VerifyError {
     RolloutWiring {
         /// The offending rollout step.
         step: usize,
+    },
+    /// A block op read a buffer that was not yet written / seeded.
+    MissingBuffer {
+        /// The missing buffer id.
+        buf: u32,
+    },
+    /// A block op's claimed output disagreed with its exact recompute.
+    BlockOpMismatch {
+        /// Op id of the offending block op.
+        op_id: u32,
     },
 }
 
@@ -287,6 +302,231 @@ pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
         latents.push(next);
     }
     Ok(())
+}
+
+/// Verify a named-buffer predictor block (specs.md §2.1, §5): replay each
+/// [`BlockOp`] over a buffer map, threading inputs by buffer id — Linear via
+/// Freivalds, the rest by exact integer recompute (LayerNorm / activation tables /
+/// AdaLN modulate / gate / residual add). Returns the block's output buffer. The
+/// `transcript` must already be bound to the block's ops and inputs by the caller;
+/// `weights` and `tables` are the committed bindings.
+pub fn verify_block(
+    block: &Block,
+    weights: &[Tensor],
+    tables: &[pwm_core::tables::ActivationTable],
+    inputs: &[(u32, Vec<i64>)],
+    transcript: &mut Transcript,
+) -> Result<Vec<i64>, VerifyError> {
+    let mut bufs: BTreeMap<u32, Vec<i64>> = BTreeMap::new();
+    for (id, v) in inputs {
+        bufs.insert(*id, v.clone());
+    }
+    let get = |bufs: &BTreeMap<u32, Vec<i64>>, id: u32| -> Result<Vec<i64>, VerifyError> {
+        bufs.get(&id)
+            .cloned()
+            .ok_or(VerifyError::MissingBuffer { buf: id })
+    };
+    let find_weight = |id: u32| -> Result<&Tensor, VerifyError> {
+        weights
+            .iter()
+            .find(|t| t.tensor_id() == id)
+            .ok_or(VerifyError::MissingBinding("block_weight"))
+    };
+    let find_table = |id: u32| -> Result<&pwm_core::tables::ActivationTable, VerifyError> {
+        tables
+            .iter()
+            .find(|t| t.table_id == id)
+            .ok_or(VerifyError::MissingBinding("block_table"))
+    };
+
+    for op in &block.ops {
+        match op {
+            BlockOp::Linear {
+                op_id,
+                weight_id,
+                bias_id,
+                in_buf,
+                out_buf,
+                out,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let w = find_weight(*weight_id)?;
+                let shape = w.shape();
+                if shape.len() != 2 {
+                    return Err(VerifyError::MissingBinding("block_weight_shape"));
+                }
+                let rows = shape[0] as usize;
+                let cols = shape[1] as usize;
+                if x.len() != cols || out.len() != rows {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                let w_i8: Vec<i8> = w.data().iter().map(|c| c.value() as i8).collect();
+                let bias: Vec<i64> = match bias_id {
+                    Some(bid) => find_weight(*bid)?
+                        .data()
+                        .iter()
+                        .map(|c| c.value())
+                        .collect(),
+                    None => alloc::vec![0i64; rows],
+                };
+                let r: Vec<Fp61> = next_freivalds_r(transcript, rows);
+                let v = precompute_v(&r, &w_i8, rows, cols);
+                if !check_linear_biased(&v, &x, &bias, &r, out) {
+                    return Err(VerifyError::FreivaldsCheckFailed { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Requant {
+                op_id,
+                in_buf,
+                out_buf,
+                out,
+                shift,
+                zero_point,
+                clamp_lo,
+                clamp_hi,
+                rounding,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let mode = Rounding::from_discriminant(*rounding)
+                    .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                if x.len() != out.len() {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                for (&n, &claimed) in x.iter().zip(out.iter()) {
+                    if requantize(n, *shift, *zero_point, *clamp_lo, *clamp_hi, mode) != claimed {
+                        return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                    }
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Activation {
+                op_id,
+                table_id,
+                in_buf,
+                out_buf,
+                out,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let table = find_table(*table_id)?;
+                if x.len() != out.len() {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                for (&xi, &claimed) in x.iter().zip(out.iter()) {
+                    let e = table.eval(xi).ok_or(VerifyError::ActivationDomain {
+                        table_id: *table_id,
+                    })?;
+                    if e != claimed {
+                        return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                    }
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::LayerNorm {
+                op_id,
+                table_id,
+                in_buf,
+                out_buf,
+                out,
+                shift,
+                clamp_lo,
+                clamp_hi,
+                rounding,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let table = find_table(*table_id)?;
+                let mode = Rounding::from_discriminant(*rounding)
+                    .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                let expected = layernorm(&x, table, *shift, *clamp_lo, *clamp_hi, mode).ok_or(
+                    VerifyError::ActivationDomain {
+                        table_id: *table_id,
+                    },
+                )?;
+                if &expected != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Modulate {
+                op_id,
+                x_buf,
+                scale_buf,
+                shift_buf,
+                out_buf,
+                out,
+                one,
+                shift_bits,
+                clamp_lo,
+                clamp_hi,
+                rounding,
+            } => {
+                let x = get(&bufs, *x_buf)?;
+                let scale = get(&bufs, *scale_buf)?;
+                let shift = get(&bufs, *shift_buf)?;
+                let mode = Rounding::from_discriminant(*rounding)
+                    .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                if scale.len() != x.len() || shift.len() != x.len() {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                let expected = modulate_vec(
+                    &x,
+                    &scale,
+                    &shift,
+                    *one,
+                    *shift_bits,
+                    *clamp_lo,
+                    *clamp_hi,
+                    mode,
+                );
+                if &expected != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Gate {
+                op_id,
+                gate_buf,
+                x_buf,
+                out_buf,
+                out,
+                shift_bits,
+                clamp_lo,
+                clamp_hi,
+                rounding,
+            } => {
+                let g = get(&bufs, *gate_buf)?;
+                let x = get(&bufs, *x_buf)?;
+                let mode = Rounding::from_discriminant(*rounding)
+                    .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                if g.len() != x.len() {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                let expected = gate_vec(&g, &x, *shift_bits, *clamp_lo, *clamp_hi, mode);
+                if &expected != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Add {
+                op_id,
+                a_buf,
+                b_buf,
+                out_buf,
+                out,
+            } => {
+                let a = get(&bufs, *a_buf)?;
+                let b = get(&bufs, *b_buf)?;
+                if a.len() != b.len() {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                if &residual_add(&a, &b) != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+        }
+    }
+    get(&bufs, block.output_buf)
 }
 
 /// Each trace record must match the graph op at the same index by kind, ids, and

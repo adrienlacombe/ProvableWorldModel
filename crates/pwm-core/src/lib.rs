@@ -18,6 +18,7 @@
 extern crate alloc;
 
 pub mod audit;
+pub mod block;
 pub mod commit;
 pub mod field;
 pub mod fixed_point;
