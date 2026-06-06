@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pwm_export import data_adapter, export, fold, ingest, quantize  # noqa: E402
+from pwm_export import data_adapter, export, fold, ingest, lewm, quantize  # noqa: E402
 
 
 def _rng(seed):
@@ -148,6 +148,37 @@ def test_build_p2_bundle_shapes_and_int8():
     assert len(bundle["z_history"]["data"]) == H * L
     assert all(-128 <= v <= 127 for v in bundle["z_history"]["data"])
     assert len(bundle["candidate_actions"]) == S and len(bundle["candidate_actions"][0]) == T * A
+
+
+# --- E-201: real le-wm key adapter (synthetic params, exercises the mapping) ---
+
+
+def _synthetic_lewm_params(dims, seed=7):
+    g = _rng(seed)
+    return {name: g.standard_normal(shape) for name, shape in lewm.v0_linear_shapes(dims).items()}
+
+
+def test_lewm_adapter_extracts_v0_linears():
+    linears = lewm.extract_v0_linears(_synthetic_lewm_params(ingest.V0_DIMS))
+    # 2 action-encoder + 6 blocks × 5 + 2 pred_proj = 34 Freivalds linears.
+    assert len(linears) == 34
+    names = {n for n, _ in linears}
+    assert "predictor.transformer.layers.0.attn.to_qkv.weight" in names
+    assert "predictor.transformer.layers.5.adaLN_modulation.1.weight" in names
+    assert "pred_proj.net.0.weight" in names
+    # qkv is fused [3·heads·dim_head, latent] = [3072, 192].
+    qkv = dict(linears)["predictor.transformer.layers.0.attn.to_qkv.weight"]
+    assert qkv.shape == (3072, 192)
+
+
+def test_lewm_adapter_rejects_wrong_shape():
+    params = _synthetic_lewm_params(ingest.V0_DIMS)
+    params["pred_proj.net.3.weight"] = np.zeros((192, 2047))
+    try:
+        lewm.extract_v0_linears(params)
+        assert False, "expected shape mismatch"
+    except ValueError as e:
+        assert "pred_proj.net.3.weight" in str(e)
 
 
 if __name__ == "__main__":

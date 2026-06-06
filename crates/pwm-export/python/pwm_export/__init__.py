@@ -7,6 +7,8 @@
   torch only to read a checkpoint).
 - `quantize`   — int8 / power-of-two quantization + MAC bounds (E-202; NumPy).
 - `fold`       — frozen BatchNorm folding into the preceding Linear (E-203; NumPy).
+- `lewm`       — real le-wm module-key → V0 subgraph adapter (E-201; NumPy). See
+  `scripts/export_lewm.py` for the real torch end-to-end run.
 - `export`     — driver: ingest → fold → quantize → committed manifest (E-205).
 - `data_adapter` — stable-worldmodel transitions / latents / candidate sets and
   the committed P2 input bundle (E-208; bundle assembly is NumPy, loaders need swm).
