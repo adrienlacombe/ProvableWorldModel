@@ -199,6 +199,26 @@ pub enum BlockOp {
         /// Fixed-point unit the row sums to.
         one: i64,
     },
+    /// Batched linear: apply one weight `W` (`[rows, cols]`) to **every row** of a
+    /// `[seq, cols]` sequence buffer, producing `[seq, rows]` (the ViT/transformer
+    /// projection). The Freivalds `v = rᵀW` is precomputed once and checked per
+    /// row — the amortized sequence linear.
+    BatchedLinear {
+        /// Op id.
+        op_id: u32,
+        /// Weight matrix id (`[rows, cols]`).
+        weight_id: u32,
+        /// Optional bias id (`[rows]`).
+        bias_id: Option<u32>,
+        /// Input buffer (`[seq, cols]`, row-major).
+        in_buf: u32,
+        /// Output buffer (`[seq, rows]`, row-major).
+        out_buf: u32,
+        /// Claimed output.
+        out: Vec<i64>,
+        /// Sequence length (number of rows).
+        seq: u32,
+    },
     /// Contiguous slice `out = in_buf[start..start+len]` (split a per-position
     /// row out of a packed buffer, or one AdaLN parameter out of the 6-way chunk).
     Slice {
@@ -241,6 +261,7 @@ impl BlockOp {
             | BlockOp::Add { op_id, .. }
             | BlockOp::MatMul { op_id, .. }
             | BlockOp::Softmax { op_id, .. }
+            | BlockOp::BatchedLinear { op_id, .. }
             | BlockOp::Slice { op_id, .. }
             | BlockOp::Concat { op_id, .. } => *op_id,
         }
@@ -258,6 +279,7 @@ impl BlockOp {
             | BlockOp::Add { out_buf, .. }
             | BlockOp::MatMul { out_buf, .. }
             | BlockOp::Softmax { out_buf, .. }
+            | BlockOp::BatchedLinear { out_buf, .. }
             | BlockOp::Slice { out_buf, .. }
             | BlockOp::Concat { out_buf, .. } => *out_buf,
         }
@@ -275,6 +297,7 @@ impl BlockOp {
             | BlockOp::Add { out, .. }
             | BlockOp::MatMul { out, .. }
             | BlockOp::Softmax { out, .. }
+            | BlockOp::BatchedLinear { out, .. }
             | BlockOp::Slice { out, .. }
             | BlockOp::Concat { out, .. } => out,
         }
@@ -293,6 +316,7 @@ impl BlockOp {
             BlockOp::Softmax { .. } => 8,
             BlockOp::Slice { .. } => 9,
             BlockOp::Concat { .. } => 10,
+            BlockOp::BatchedLinear { .. } => 11,
         }
     }
 
@@ -501,6 +525,23 @@ impl CanonicalEncode for BlockOp {
                 in_bufs.encode(out);
                 out_buf.encode(out);
                 o.encode(out);
+            }
+            BlockOp::BatchedLinear {
+                op_id,
+                weight_id,
+                bias_id,
+                in_buf,
+                out_buf,
+                out: o,
+                seq,
+            } => {
+                op_id.encode(out);
+                weight_id.encode(out);
+                bias_id.encode(out);
+                in_buf.encode(out);
+                out_buf.encode(out);
+                o.encode(out);
+                seq.encode(out);
             }
         }
     }

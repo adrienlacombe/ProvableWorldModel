@@ -354,6 +354,137 @@ fn accept_multiposition_attention_with_projection() {
     assert_eq!(out, vec![400, 200, 200, 400]);
 }
 
+// --- Standard transformer encoder block (ViT structure; D-804) via BatchedLinear ---
+
+#[test]
+fn accept_vit_encoder_block() {
+    let id = |tid| w(tid, 2, 2, &[1, 0, 0, 1]); // identity 2x2
+    let weights = vec![
+        id(10),
+        id(11),
+        id(12),
+        id(13),                                  // Wq, Wk, Wv, Wproj = I
+        w(14, 4, 2, &[1, 0, 0, 1, 1, 1, 1, -1]), // fc1 [4x2]
+        w(15, 2, 4, &[1, 1, 1, 1, 1, 0, 0, 1]),  // fc2 [2x4]
+    ];
+    let tables = vec![
+        ActivationTable {
+            table_id: 3,
+            lo: -2,
+            outputs: vec![1, 2, 4],
+        }, // exp
+        ActivationTable {
+            table_id: 16,
+            lo: -2000,
+            outputs: (-2000i64..=2000).collect(),
+        }, // GELU=id
+    ];
+    let bl = |op_id, weight_id, in_buf, out_buf| BlockOp::BatchedLinear {
+        op_id,
+        weight_id,
+        bias_id: None,
+        in_buf,
+        out_buf,
+        out: vec![],
+        seq: 2,
+    };
+    let mm = |op_id, a_buf, b_buf, out_buf, transpose_b| BlockOp::MatMul {
+        op_id,
+        a_buf,
+        b_buf,
+        out_buf,
+        out: vec![],
+        rows: 2,
+        inner: 2,
+        cols: 2,
+        transpose_b,
+    };
+    let block = Block {
+        input_bufs: vec![0], // x: 2 patches x dim 2
+        ops: vec![
+            bl(1, 10, 0, 1),      // Q
+            bl(2, 11, 0, 2),      // K
+            bl(3, 12, 0, 3),      // V
+            mm(4, 1, 2, 4, true), // scores = Q·Kᵀ
+            BlockOp::Softmax {
+                op_id: 5,
+                table_id: 3,
+                in_buf: 4,
+                out_buf: 5,
+                out: vec![],
+                row_len: 2,
+                one: 600,
+            },
+            mm(6, 5, 3, 6, false), // attn = prob·V
+            bl(7, 13, 6, 7),       // out-proj
+            BlockOp::Add {
+                op_id: 8,
+                a_buf: 0,
+                b_buf: 7,
+                out_buf: 8,
+                out: vec![],
+            }, // residual 1
+            bl(9, 14, 8, 9),       // FFN fc1 -> [2,4]
+            BlockOp::Activation {
+                op_id: 10,
+                table_id: 16,
+                in_buf: 9,
+                out_buf: 10,
+                out: vec![],
+            }, // GELU
+            bl(11, 15, 10, 11),    // FFN fc2 -> [2,2]
+            BlockOp::Add {
+                op_id: 12,
+                a_buf: 8,
+                b_buf: 11,
+                out_buf: 12,
+                out: vec![],
+            }, // residual 2
+        ],
+        output_buf: 12,
+    };
+    let inputs = vec![(0, vec![1, 0, 0, 1])];
+    let proven = prove_block(&block, &weights, &tables, &inputs).unwrap();
+    let mut t = transcript_for(&proven, &inputs);
+    let out = verify_block(&proven, &weights, &tables, &inputs, &mut t).unwrap();
+    assert_eq!(out, vec![1804, 802, 1201, 400]);
+}
+
+#[test]
+fn reject_tampered_encoder_projection() {
+    let id = |tid| w(tid, 2, 2, &[1, 0, 0, 1]);
+    let weights = vec![w(10, 2, 2, &[1, 0, 0, 1]), id(11), id(12)];
+    let tables = vec![ActivationTable {
+        table_id: 3,
+        lo: -2,
+        outputs: vec![1, 2, 4],
+    }];
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::BatchedLinear {
+            op_id: 1,
+            weight_id: 10,
+            bias_id: None,
+            in_buf: 0,
+            out_buf: 1,
+            out: vec![],
+            seq: 2,
+        }],
+        output_buf: 1,
+    };
+    let inputs = vec![(0, vec![3, 4, 5, 6])];
+    let mut proven = prove_block(&block, &weights, &tables, &inputs).unwrap();
+    // Tamper one row of the batched projection -> Freivalds rejects.
+    if let BlockOp::BatchedLinear { out, .. } = &mut proven.ops[0] {
+        out[3] += 1;
+    }
+    let mut t = transcript_for(&proven, &inputs);
+    assert!(matches!(
+        verify_block(&proven, &weights, &tables, &inputs, &mut t),
+        Err(VerifyError::FreivaldsCheckFailed { op_id: 1 })
+    ));
+}
+
 #[test]
 fn reject_tampered_block_residual() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();

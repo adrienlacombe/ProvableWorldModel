@@ -584,6 +584,54 @@ pub fn prove_block(
                     out,
                 }
             }
+            BlockOp::BatchedLinear {
+                op_id,
+                weight_id,
+                bias_id,
+                in_buf,
+                out_buf,
+                seq,
+                ..
+            } => {
+                let x = get(&bufs, in_buf)?;
+                let w = weight(weight_id)?;
+                let shape = w.shape();
+                if shape.len() != 2 {
+                    return Err(BlockError::Shape);
+                }
+                let (rows, cols) = (shape[0] as usize, shape[1] as usize);
+                let s = seq as usize;
+                if x.len() != s * cols {
+                    return Err(BlockError::Shape);
+                }
+                let wd = w.data();
+                let bias: Vec<i64> = match bias_id {
+                    Some(bid) => weight(bid)?.data().iter().map(|c| c.value()).collect(),
+                    None => vec![0i64; rows],
+                };
+                let mut out = Vec::with_capacity(s * rows);
+                for tt in 0..s {
+                    let xrow = &x[tt * cols..(tt + 1) * cols];
+                    for (r, &b) in bias.iter().enumerate() {
+                        let base = r * cols;
+                        out.push(
+                            b + (0..cols)
+                                .map(|c| wd[base + c].value() * xrow[c])
+                                .sum::<i64>(),
+                        );
+                    }
+                }
+                bufs.insert(out_buf, out.clone());
+                BlockOp::BatchedLinear {
+                    op_id,
+                    weight_id,
+                    bias_id,
+                    in_buf,
+                    out_buf,
+                    out,
+                    seq,
+                }
+            }
         };
         out_ops.push(filled);
     }

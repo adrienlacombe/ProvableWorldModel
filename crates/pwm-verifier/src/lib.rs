@@ -863,6 +863,48 @@ pub fn verify_block(
                 }
                 bufs.insert(*out_buf, out.clone());
             }
+            BlockOp::BatchedLinear {
+                op_id,
+                weight_id,
+                bias_id,
+                in_buf,
+                out_buf,
+                out,
+                seq,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let w = find_weight(*weight_id)?;
+                let shape = w.shape();
+                if shape.len() != 2 {
+                    return Err(VerifyError::MissingBinding("block_weight_shape"));
+                }
+                let rows = shape[0] as usize;
+                let cols = shape[1] as usize;
+                let w_i8s: Vec<i8> = w.data().iter().map(|c| c.value() as i8).collect();
+                let s = *seq as usize;
+                if x.len() != s * cols || out.len() != s * rows {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                let bias: Vec<i64> = match bias_id {
+                    Some(bid) => find_weight(*bid)?
+                        .data()
+                        .iter()
+                        .map(|c| c.value())
+                        .collect(),
+                    None => alloc::vec![0i64; rows],
+                };
+                // One challenge + one precomputed v, reused across all `seq` rows.
+                let r = next_freivalds_r(transcript, rows);
+                let v = precompute_v(&r, &w_i8s, rows, cols);
+                for tt in 0..s {
+                    let xrow = &x[tt * cols..(tt + 1) * cols];
+                    let orow = &out[tt * rows..(tt + 1) * rows];
+                    if !check_linear_biased(&v, xrow, &bias, &r, orow) {
+                        return Err(VerifyError::FreivaldsCheckFailed { op_id: *op_id });
+                    }
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
         }
     }
     get(&bufs, block.output_buf)
