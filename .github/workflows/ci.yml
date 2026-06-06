@@ -95,6 +95,11 @@ jobs:
       # Python<->Rust canonical-encoding parity (the export-side commitment bridge).
       - name: Export canonical parity (Python vs Rust)
         run: python3 crates/pwm-export/python/tests/test_canonical_parity.py
+      # Export pipeline (E-201/202/203/208) on synthetic le-wm-shaped data (NumPy).
+      - name: Export pipeline (ingest/quantize/fold/bundle)
+        run: |
+          python3 -m pip install --quiet numpy
+          python3 crates/pwm-export/python/tests/test_export_pipeline.py
 
   license:
     name: License / SPDX

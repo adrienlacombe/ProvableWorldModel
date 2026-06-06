@@ -1,63 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
-"""le-wm checkpoint → quantized integer graph → committed manifest.
+"""le-wm checkpoint → quantized integer graph → committed manifest (driver).
 
-Backlog E-201 (ingest), E-202 (quantize), E-203 (BatchNorm fold). This module
-**requires PyTorch and a le-wm checkpoint to run**; it is the trusted, offline
-export step. The canonical-encoding / commitment side it depends on
-([`pwm_export.canonical`]) has *no* torch dependency and is unit-tested for
-byte-identical parity with the Rust verifier, so a real export here produces a
-manifest whose commitments the Rust prover and verifier reproduce exactly.
+Ties the pipeline together: ingest (E-201, [`pwm_export.ingest`]) → BatchNorm fold
+(E-203, [`pwm_export.fold`]) → quantization (E-202, [`pwm_export.quantize`]) →
+manifest commitments (E-205, via the torch-free [`pwm_export.canonical`] bridge,
+byte-identical to the Rust verifier).
 
-Number policy (specs.md §3): int8 weights, power-of-two per-tensor symmetric
-scales, int32 accumulators; BatchNorm folded into the preceding linear.
+Everything except `load_checkpoint`/`quantize_torch` runs on plain NumPy arrays —
+so `export_graph` is exercised end-to-end on a synthetic le-wm-shaped graph in the
+tests, with no torch or checkpoint required. A real export only swaps the array
+source (a loaded checkpoint) for the synthetic one.
 """
 from __future__ import annotations
 
-import math
+import numpy as np
 
 from . import canonical as c
-
-
-def load_checkpoint(path: str):
-    """E-201: load a le-wm `JEPA` checkpoint (the `_object.ckpt` form) on CPU and
-    put it in eval mode (deterministic; no dropout / BN updates)."""
-    import torch  # local import: torch is only needed to run the pipeline
-
-    model = torch.load(path, map_location="cpu", weights_only=False)
-    model.eval()
-    return model
-
-
-def quantize_tensor(w, qmax: int = 127):
-    """E-202: per-tensor symmetric quantization with a power-of-two scale.
-
-    Returns `(q_int_list, log2)` where the real value is `q * 2**log2` and `q` is
-    clamped to `[-qmax-1, qmax]`. `log2` is chosen so the largest magnitude fits.
-    """
-    import torch
-
-    absmax = float(w.abs().max().item())
-    log2 = 0 if absmax == 0.0 else math.ceil(math.log2(absmax / qmax))
-    scale = 2.0**log2
-    q = torch.clamp(torch.round(w / scale), -qmax - 1, qmax).to(torch.int64)
-    return q.flatten().tolist(), log2
-
-
-def fold_batchnorm(weight, bias, bn):
-    """E-203: fold a (frozen) BatchNorm1d into the preceding linear's weight/bias.
-
-    `y = bn(W x + b)` with frozen stats becomes an affine `W' x + b'`:
-        s = gamma / sqrt(running_var + eps)
-        W' = W * s[:, None];  b' = (b - running_mean) * s + beta
-    """
-    import torch
-
-    gamma = bn.weight if getattr(bn, "affine", False) else torch.ones_like(bn.running_mean)
-    beta = bn.bias if getattr(bn, "affine", False) else torch.zeros_like(bn.running_mean)
-    s = gamma / torch.sqrt(bn.running_var + bn.eps)
-    w2 = weight * s.unsqueeze(1)
-    b2 = (bias - bn.running_mean) * s + beta
-    return w2, b2
+from .fold import fold_linear_bn
+from .quantize import mac_fits_int32, quantize_array
 
 
 def tensor_dict(tensor_id: int, scale_id: int, q_list: list[int], shape: list[int]) -> dict:
@@ -70,9 +30,46 @@ def tensor_dict(tensor_id: int, scale_id: int, q_list: list[int], shape: list[in
     }
 
 
+def quantize_torch(w, qmax: int = 127) -> tuple[list[int], int]:
+    """Torch entry point for E-202: convert a tensor to an array and quantize."""
+    return quantize_array(np.asarray(w.detach().cpu().numpy()), qmax)
+
+
+def fold_torch(weight, bias, bn):
+    """Torch entry point for E-203: pull frozen BN stats and fold (NumPy core)."""
+    import torch
+
+    affine = getattr(bn, "affine", False)
+    gamma = bn.weight if affine else torch.ones_like(bn.running_mean)
+    beta = bn.bias if affine else torch.zeros_like(bn.running_mean)
+    return fold_linear_bn(
+        weight.detach().cpu().numpy(),
+        bias.detach().cpu().numpy(),
+        gamma.detach().cpu().numpy(),
+        beta.detach().cpu().numpy(),
+        bn.running_mean.detach().cpu().numpy(),
+        bn.running_var.detach().cpu().numpy(),
+        float(bn.eps),
+    )
+
+
+def quantize_linear(tensor_id: int, scale_id: int, weight) -> tuple[dict, dict]:
+    """Quantize one `[out, in]` Linear weight → `(tensor_dict, scale_dict)`.
+
+    Asserts the int8 MAC for this layer fits the int32 accumulator (spec §3).
+    """
+    weight = np.asarray(weight, dtype=np.float64)
+    out, inner = weight.shape
+    if not mac_fits_int32(inner):
+        raise ValueError(f"layer {tensor_id}: inner={inner} overflows int32 MAC")
+    q, log2 = quantize_array(weight)
+    tensor = tensor_dict(tensor_id, scale_id, q, [out, inner])
+    scale = {"scale_id": scale_id, "log2": log2, "dtype": "i8"}
+    return tensor, scale
+
+
 def build_manifest(ops: list[dict], weights: list[dict], tables: list[dict], scales: list[dict]):
-    """E-205: assemble the committed manifest bytes + commitments via the canonical
-    bridge (byte-identical to the Rust verifier)."""
+    """E-205: assemble the committed manifest commitments via the canonical bridge."""
     return {
         "model_commitment": c.model_commitment(ops, weights, 1, 1).hex(),
         "quantization_commitment": c.quantization_commitment(scales, tables).hex(),
@@ -81,9 +78,39 @@ def build_manifest(ops: list[dict], weights: list[dict], tables: list[dict], sca
     }
 
 
-# A full `export_lewm(checkpoint_path) -> manifest + weights + golden vectors`
-# driver wires load_checkpoint → per-layer quantize_tensor / fold_batchnorm →
-# build_manifest, and runs the le-wm predictor in fixed point to emit golden
-# vectors for the Rust parity gate (E-207). It is omitted here because it needs a
-# real checkpoint to produce meaningful output; the pieces above are its building
-# blocks and the canonical bridge is independently tested.
+def export_graph(named_weights: list[tuple[int, str, np.ndarray]], tables: list[dict]) -> dict:
+    """Quantize a list of `(op_id, name, weight)` Linears into a committed manifest.
+
+    Returns `{"manifest", "weights", "ops", "scales"}` — the manifest carries the
+    same commitments the Rust prover/verifier reproduce (E-205/E-207).
+    """
+    ops: list[dict] = []
+    weights: list[dict] = []
+    scales: list[dict] = []
+    for idx, (op_id, _name, w) in enumerate(named_weights):
+        out, inner = np.asarray(w).shape
+        tensor, scale = quantize_linear(tensor_id=idx, scale_id=idx, weight=w)
+        weights.append(tensor)
+        scales.append(scale)
+        ops.append(
+            {
+                "kind": "linear",
+                "op_id": op_id,
+                "weight_id": idx,
+                "bias_id": None,
+                "rows": int(out),
+                "cols": int(inner),
+            }
+        )
+    return {
+        "manifest": build_manifest(ops, weights, tables, scales),
+        "weights": weights,
+        "ops": ops,
+        "scales": scales,
+    }
+
+
+# A real `export_lewm(path)` = `ingest.load_checkpoint` → `ingest.state_arrays_from_torch`
+# → `ingest.extract_v0_subgraph` → `fold_torch` (pred_proj BN) → `export_graph`.
+# Each piece is tested on synthetic NumPy arrays; only the checkpoint read needs
+# torch + the real file.
