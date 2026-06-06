@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+name = "ProvableWorldModel"
+defaultTargets = ["ProvableWorldModel"]
+
+# Mathlib is required only by `FreivaldsBound.lean` (finite-field counting for the
+# Freivalds soundness probability). `Freivalds.lean` stays Mathlib-free and also
+# compiles standalone via `lean ProvableWorldModel/Freivalds.lean`.
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "v4.30.0"
+
+[[lean_lib]]
+name = "ProvableWorldModel"

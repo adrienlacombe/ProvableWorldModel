@@ -126,3 +126,15 @@ jobs:
       # empty campaign exists yet) and exits non-zero on a survivor or a score
       # below target (INV-TEST-05). Components register real campaigns as they land.
       - run: cargo run -p pwm-testkit --bin mutation_runner --locked
+
+  lean:
+    name: Lean soundness proofs (D-805)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Builds the argmin uniqueness proof + the Freivalds probability bound.
+      # lean-action installs elan from lean/lean-toolchain and fetches the prebuilt
+      # Mathlib cache (`lake exe cache get`) before `lake build` — no Mathlib rebuild.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: "lean"

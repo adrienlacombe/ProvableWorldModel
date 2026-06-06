@@ -12,6 +12,10 @@ target/
 docs/papers/arxiv/
 data/raw/
 
+# Lean / Lake build artifacts and fetched dependencies (Mathlib is ~8 GB);
+# lake-manifest.json IS tracked so the dependency revs are pinned/reproducible.
+lean/.lake/
+
 # Local automation and scratch workspaces
 .agents/harness/
 .tldr/
