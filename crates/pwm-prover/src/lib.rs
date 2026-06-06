@@ -23,7 +23,7 @@ use pwm_core::commit::{
 use pwm_core::field::{try_encode, OutOfRange};
 use pwm_core::fixed_point::{requantize, OverflowPolicy, Rounding};
 use pwm_core::planning::{argmin, mse_cost};
-use pwm_core::predictor::{gate_vec, layernorm, modulate_vec, residual_add};
+use pwm_core::predictor::{gate_vec, layernorm, matmul, modulate_vec, residual_add, softmax_rows};
 use pwm_core::public_input::PublicInput;
 use pwm_core::relation::StatementType;
 use pwm_core::tables::{activation_tables_commitment, ActivationTable};
@@ -480,6 +480,65 @@ pub fn prove_block(
                     b_buf,
                     out_buf,
                     out,
+                }
+            }
+            BlockOp::MatMul {
+                op_id,
+                a_buf,
+                b_buf,
+                out_buf,
+                rows,
+                inner,
+                cols,
+                transpose_b,
+                ..
+            } => {
+                let a = get(&bufs, a_buf)?;
+                let b = get(&bufs, b_buf)?;
+                let out = matmul(
+                    &a,
+                    &b,
+                    rows as usize,
+                    inner as usize,
+                    cols as usize,
+                    transpose_b,
+                )
+                .ok_or(BlockError::Shape)?;
+                bufs.insert(out_buf, out.clone());
+                BlockOp::MatMul {
+                    op_id,
+                    a_buf,
+                    b_buf,
+                    out_buf,
+                    out,
+                    rows,
+                    inner,
+                    cols,
+                    transpose_b,
+                }
+            }
+            BlockOp::Softmax {
+                op_id,
+                table_id,
+                in_buf,
+                out_buf,
+                row_len,
+                one,
+                ..
+            } => {
+                let x = get(&bufs, in_buf)?;
+                let t = table(table_id)?;
+                let out =
+                    softmax_rows(&x, row_len as usize, t, one).ok_or(BlockError::TableDomain)?;
+                bufs.insert(out_buf, out.clone());
+                BlockOp::Softmax {
+                    op_id,
+                    table_id,
+                    in_buf,
+                    out_buf,
+                    out,
+                    row_len,
+                    one,
                 }
             }
         };

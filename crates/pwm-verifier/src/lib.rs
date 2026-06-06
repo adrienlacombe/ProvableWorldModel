@@ -21,7 +21,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use pwm_core::block::{Block, BlockOp};
-use pwm_core::predictor::{gate_vec, modulate_vec, residual_add};
+use pwm_core::predictor::{gate_vec, matmul, modulate_vec, residual_add, softmax_rows};
 use pwm_core::tensor::Tensor;
 
 use pwm_core::audit::{
@@ -520,6 +520,54 @@ pub fn verify_block(
                     return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
                 }
                 if &residual_add(&a, &b) != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::MatMul {
+                op_id,
+                a_buf,
+                b_buf,
+                out_buf,
+                out,
+                rows,
+                inner,
+                cols,
+                transpose_b,
+            } => {
+                let a = get(&bufs, *a_buf)?;
+                let b = get(&bufs, *b_buf)?;
+                let expected = matmul(
+                    &a,
+                    &b,
+                    *rows as usize,
+                    *inner as usize,
+                    *cols as usize,
+                    *transpose_b,
+                )
+                .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                if &expected != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Softmax {
+                op_id,
+                table_id,
+                in_buf,
+                out_buf,
+                out,
+                row_len,
+                one,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let t = find_table(*table_id)?;
+                let expected = softmax_rows(&x, *row_len as usize, t, *one).ok_or(
+                    VerifyError::ActivationDomain {
+                        table_id: *table_id,
+                    },
+                )?;
+                if &expected != out {
                     return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
                 }
                 bufs.insert(*out_buf, out.clone());

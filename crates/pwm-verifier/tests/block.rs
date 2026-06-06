@@ -175,6 +175,94 @@ fn reject_tampered_block_linear() {
     ));
 }
 
+// --- Single-head attention core: QKᵀ -> row softmax -> prob·V ---
+
+fn attention_block() -> Block {
+    Block {
+        input_bufs: vec![0, 1, 2], // Q, K, V (each [S=2, d=2])
+        ops: vec![
+            // scores = Q · Kᵀ  ([2,2])
+            BlockOp::MatMul {
+                op_id: 1,
+                a_buf: 0,
+                b_buf: 1,
+                out_buf: 3,
+                out: vec![],
+                rows: 2,
+                inner: 2,
+                cols: 2,
+                transpose_b: true,
+            },
+            // prob = softmax(scores) per row
+            BlockOp::Softmax {
+                op_id: 2,
+                table_id: 3,
+                in_buf: 3,
+                out_buf: 4,
+                out: vec![],
+                row_len: 2,
+                one: 600,
+            },
+            // out = prob · V  ([2,2])
+            BlockOp::MatMul {
+                op_id: 3,
+                a_buf: 4,
+                b_buf: 2,
+                out_buf: 5,
+                out: vec![],
+                rows: 2,
+                inner: 2,
+                cols: 2,
+                transpose_b: false,
+            },
+        ],
+        output_buf: 5,
+    }
+}
+
+fn attention_inputs() -> Vec<(u32, Vec<i64>)> {
+    vec![
+        (0, vec![1, 0, 0, 1]), // Q = I
+        (1, vec![1, 0, 0, 1]), // K = I
+        (2, vec![1, 0, 0, 1]), // V = I
+    ]
+}
+
+fn exp_tables() -> Vec<ActivationTable> {
+    // exp over shifted scores in [-2,0]: exp(-2)=1, exp(-1)=2, exp(0)=4.
+    vec![ActivationTable {
+        table_id: 3,
+        lo: -2,
+        outputs: vec![1, 2, 4],
+    }]
+}
+
+#[test]
+fn accept_single_head_attention() {
+    let proven = prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
+    let mut t = transcript_for(&proven, &attention_inputs());
+    let out = verify_block(&proven, &[], &exp_tables(), &attention_inputs(), &mut t).unwrap();
+    // scores=[[1,0],[0,1]]; softmax rows -> [[400,200],[200,400]]; prob·V(=I) -> same.
+    assert_eq!(out, vec![400, 200, 200, 400]);
+}
+
+#[test]
+fn reject_tampered_attention_scores() {
+    let mut proven =
+        prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
+    // Tamper the QKᵀ scores (op_id 1) -> exact matmul recompute rejects.
+    for op in proven.ops.iter_mut() {
+        if let BlockOp::MatMul { op_id: 1, out, .. } = op {
+            out[0] += 1;
+        }
+    }
+    let mut t = transcript_for(&proven, &attention_inputs());
+    assert!(matches!(
+        verify_block(&proven, &[], &exp_tables(), &attention_inputs(), &mut t),
+        Err(VerifyError::BlockOpMismatch { op_id: 1 })
+    ));
+}
+
 #[test]
 fn reject_tampered_block_residual() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();

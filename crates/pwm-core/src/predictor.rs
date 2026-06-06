@@ -152,6 +152,59 @@ pub fn softmax(scores: &[i64], exp: &ActivationTable, one: i64) -> Option<Vec<i6
     Some(exps.iter().map(|&e| (e * one) / sum).collect())
 }
 
+/// Exact integer matmul for attention's data-dependent products. `a` is
+/// `[rows, inner]` row-major; if `transpose_b`, `b` is `[cols, inner]` and the
+/// result is `a·bᵀ` (the QKᵀ scores), else `b` is `[inner, cols]` and the result
+/// is `a·b` (prob·V). Returns `[rows, cols]` row-major, or `None` on a length
+/// mismatch.
+pub fn matmul(
+    a: &[i64],
+    b: &[i64],
+    rows: usize,
+    inner: usize,
+    cols: usize,
+    transpose_b: bool,
+) -> Option<Vec<i64>> {
+    if a.len() != rows * inner || b.len() != cols * inner {
+        return None;
+    }
+    let mut out = alloc::vec![0i64; rows * cols];
+    for i in 0..rows {
+        for j in 0..cols {
+            let mut acc = 0i64;
+            for k in 0..inner {
+                let bv = if transpose_b {
+                    b[j * inner + k]
+                } else {
+                    b[k * cols + j]
+                };
+                acc += a[i * inner + k] * bv;
+            }
+            out[i * cols + j] = acc;
+        }
+    }
+    Some(out)
+}
+
+/// Row-wise softmax over a `[rows, row_len]` buffer (attention probabilities):
+/// apply [`softmax`] to each contiguous row. Returns `None` on a shape mismatch
+/// or an out-of-domain exp.
+pub fn softmax_rows(
+    scores: &[i64],
+    row_len: usize,
+    exp: &ActivationTable,
+    one: i64,
+) -> Option<Vec<i64>> {
+    if row_len == 0 || scores.len() % row_len != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(scores.len());
+    for chunk in scores.chunks(row_len) {
+        out.extend(softmax(chunk, exp, one)?);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,7 +283,7 @@ mod tests {
         let one = 1300;
         let p = softmax(&[0, -1, -3], &exp, one).unwrap();
         assert_eq!(p, vec![800, 400, 100]); // e=[8,4,1], sum 13, *1300/13
-        // The largest score gets the largest probability mass.
+                                            // The largest score gets the largest probability mass.
         assert!(p[0] > p[1] && p[1] > p[2]);
     }
 

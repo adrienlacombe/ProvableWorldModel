@@ -158,6 +158,47 @@ pub enum BlockOp {
         /// Claimed output.
         out: Vec<i64>,
     },
+    /// Data-dependent matmul (attention QKᵀ / prob·V), exactly recomputed. `a` is
+    /// `[rows, inner]`; if `transpose_b`, `b` is `[cols, inner]` and the result is
+    /// `a·bᵀ` (QKᵀ), else `b` is `[inner, cols]` and the result is `a·b` (prob·V).
+    MatMul {
+        /// Op id.
+        op_id: u32,
+        /// Left operand buffer (`[rows, inner]`, row-major).
+        a_buf: u32,
+        /// Right operand buffer.
+        b_buf: u32,
+        /// Output buffer (`[rows, cols]`, row-major).
+        out_buf: u32,
+        /// Claimed output.
+        out: Vec<i64>,
+        /// Output rows.
+        rows: u32,
+        /// Contraction dimension.
+        inner: u32,
+        /// Output columns.
+        cols: u32,
+        /// Whether `b` is transposed (`a·bᵀ`).
+        transpose_b: bool,
+    },
+    /// Row-wise softmax over a `[rows, row_len]` buffer via a committed exp table,
+    /// scaled by `one` (per-row `Σ ≈ one`), exactly recomputed.
+    Softmax {
+        /// Op id.
+        op_id: u32,
+        /// Committed exp table id.
+        table_id: u32,
+        /// Input buffer (`[rows, row_len]`, row-major).
+        in_buf: u32,
+        /// Output buffer.
+        out_buf: u32,
+        /// Claimed output.
+        out: Vec<i64>,
+        /// Row length (softmax is applied per row).
+        row_len: u32,
+        /// Fixed-point unit the row sums to.
+        one: i64,
+    },
 }
 
 impl BlockOp {
@@ -170,7 +211,9 @@ impl BlockOp {
             | BlockOp::LayerNorm { op_id, .. }
             | BlockOp::Modulate { op_id, .. }
             | BlockOp::Gate { op_id, .. }
-            | BlockOp::Add { op_id, .. } => *op_id,
+            | BlockOp::Add { op_id, .. }
+            | BlockOp::MatMul { op_id, .. }
+            | BlockOp::Softmax { op_id, .. } => *op_id,
         }
     }
 
@@ -183,7 +226,9 @@ impl BlockOp {
             | BlockOp::LayerNorm { out_buf, .. }
             | BlockOp::Modulate { out_buf, .. }
             | BlockOp::Gate { out_buf, .. }
-            | BlockOp::Add { out_buf, .. } => *out_buf,
+            | BlockOp::Add { out_buf, .. }
+            | BlockOp::MatMul { out_buf, .. }
+            | BlockOp::Softmax { out_buf, .. } => *out_buf,
         }
     }
 
@@ -196,7 +241,9 @@ impl BlockOp {
             | BlockOp::LayerNorm { out, .. }
             | BlockOp::Modulate { out, .. }
             | BlockOp::Gate { out, .. }
-            | BlockOp::Add { out, .. } => out,
+            | BlockOp::Add { out, .. }
+            | BlockOp::MatMul { out, .. }
+            | BlockOp::Softmax { out, .. } => out,
         }
     }
 
@@ -209,6 +256,8 @@ impl BlockOp {
             BlockOp::Modulate { .. } => 4,
             BlockOp::Gate { .. } => 5,
             BlockOp::Add { .. } => 6,
+            BlockOp::MatMul { .. } => 7,
+            BlockOp::Softmax { .. } => 8,
         }
     }
 
@@ -353,6 +402,44 @@ impl CanonicalEncode for BlockOp {
                 b_buf.encode(out);
                 out_buf.encode(out);
                 o.encode(out);
+            }
+            BlockOp::MatMul {
+                op_id,
+                a_buf,
+                b_buf,
+                out_buf,
+                out: o,
+                rows,
+                inner,
+                cols,
+                transpose_b,
+            } => {
+                op_id.encode(out);
+                a_buf.encode(out);
+                b_buf.encode(out);
+                out_buf.encode(out);
+                o.encode(out);
+                rows.encode(out);
+                inner.encode(out);
+                cols.encode(out);
+                transpose_b.encode(out);
+            }
+            BlockOp::Softmax {
+                op_id,
+                table_id,
+                in_buf,
+                out_buf,
+                out: o,
+                row_len,
+                one,
+            } => {
+                op_id.encode(out);
+                table_id.encode(out);
+                in_buf.encode(out);
+                out_buf.encode(out);
+                o.encode(out);
+                row_len.encode(out);
+                one.encode(out);
             }
         }
     }
