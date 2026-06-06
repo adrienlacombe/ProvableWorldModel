@@ -16,4 +16,6 @@
 //! here; quantization, the manifest writer, and the data adapter follow per the
 //! backlog (M2).
 
+pub mod manifest;
 pub mod reference;
+pub mod tables_gen;
