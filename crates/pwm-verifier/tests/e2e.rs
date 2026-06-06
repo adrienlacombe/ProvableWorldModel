@@ -10,7 +10,7 @@ use pwm_core::tensor::{Dtype, Scale, Tensor};
 use pwm_core::trace::OpRecord;
 use pwm_export::reference::{LayerSpec, Model};
 use pwm_prover::{prove_feedforward, prove_planning, OutputBinding};
-use pwm_verifier::{verify, verify_planning, VerifyError};
+use pwm_verifier::{verify, verify_interactive, verify_planning, VerifyError};
 
 fn weight(id: u32, rows: u32, cols: u32, vals: &[i8]) -> Tensor {
     let data = vals
@@ -114,6 +114,33 @@ fn artifact_roundtrips_and_reproduces() {
     let decoded: AuditArtifact = from_canonical_bytes(&bytes).unwrap();
     assert_eq!(decoded, a);
     assert_eq!(verify(&decoded), Ok(()));
+}
+
+#[test]
+fn accept_interactive_verifier_secret_mode() {
+    use pwm_core::field::Fp61;
+    let a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    // One verifier-secret challenge per Linear op in trace order (rows 4 then 2).
+    let secret_r = vec![
+        vec![Fp61::new(7), Fp61::new(11), Fp61::new(13), Fp61::new(17)],
+        vec![Fp61::new(19), Fp61::new(23)],
+    ];
+    assert_eq!(verify_interactive(&a, &secret_r), Ok(()));
+
+    // A tampered accumulator is rejected even with verifier-secret challenges.
+    let mut b = a.clone();
+    let idx = b
+        .trace
+        .iter()
+        .position(|r| matches!(r, OpRecord::Linear(_)))
+        .unwrap();
+    if let OpRecord::Linear(r) = &mut b.trace[idx] {
+        r.output[0] += 1;
+    }
+    assert!(matches!(
+        verify_interactive(&b, &secret_r),
+        Err(VerifyError::FreivaldsCheckFailed { .. })
+    ));
 }
 
 #[test]

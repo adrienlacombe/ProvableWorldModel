@@ -120,8 +120,65 @@ pub enum VerifyError {
     },
 }
 
-/// Verify a commit-and-audit proof. Returns `Ok(())` iff every check passes.
+/// Source of Freivalds challenge vectors. `Fiat` derives them non-interactively
+/// from the committed trace (computational soundness under the hash); `Secret`
+/// uses verifier-supplied vectors the prover never sees (unconditional Freivalds
+/// soundness — the interactive mode, backlog D-802).
+enum Challenges<'a> {
+    /// Fiat-Shamir transcript bound to the public input and trace root.
+    Fiat(Transcript),
+    /// Verifier-secret challenge vectors, one per `Linear` op in trace order.
+    Secret {
+        /// The secret challenge vectors.
+        rs: &'a [Vec<Fp61>],
+        /// Cursor into `rs`.
+        idx: usize,
+    },
+}
+
+impl Challenges<'_> {
+    /// The next challenge vector of length `rows`, or `None` if a secret vector is
+    /// missing or has the wrong length.
+    fn next(&mut self, rows: usize) -> Option<Vec<Fp61>> {
+        match self {
+            Challenges::Fiat(t) => Some(next_freivalds_r(t, rows)),
+            Challenges::Secret { rs, idx } => {
+                let r = rs.get(*idx)?;
+                if r.len() != rows {
+                    return None;
+                }
+                *idx += 1;
+                Some(r.clone())
+            }
+        }
+    }
+}
+
+/// Verify a commit-and-audit proof (non-interactive Fiat-Shamir). Returns `Ok(())`
+/// iff every check passes.
 pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
+    let troot = artifact.trace_root();
+    let mut ch = Challenges::Fiat(audit_transcript(&artifact.public_input, &troot));
+    verify_with(artifact, &mut ch)
+}
+
+/// Verify a proof in **interactive (verifier-secret) mode** (backlog D-802): the
+/// Freivalds challenge vectors `secret_r` (one per `Linear` op in trace order) are
+/// chosen by the verifier and never revealed to the prover, giving unconditional
+/// (not merely computational) Freivalds soundness. All other checks are identical.
+pub fn verify_interactive(
+    artifact: &AuditArtifact,
+    secret_r: &[Vec<Fp61>],
+) -> Result<(), VerifyError> {
+    let mut ch = Challenges::Secret {
+        rs: secret_r,
+        idx: 0,
+    };
+    verify_with(artifact, &mut ch)
+}
+
+/// The shared verification body, parameterized by the Freivalds challenge source.
+fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), VerifyError> {
     let pi = &artifact.public_input;
 
     // 1. Version + relation gating.
@@ -176,12 +233,8 @@ pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
     // 3. The trace must conform to the committed op graph (same kinds/ids/dims).
     check_graph_conformance(artifact)?;
 
-    // 4. Replay the transcript to derive Freivalds challenges (bound to the
-    //    recomputed trace root, so challenges depend on the committed accumulators).
-    let troot = artifact.trace_root();
-    let mut transcript = audit_transcript(pi, &troot);
-
-    // 5. Walk the trace, threading the running activation.
+    // 4. Walk the trace, threading the running activation; Freivalds challenges
+    //    come from `ch` (Fiat-Shamir-from-the-committed-trace, or verifier-secret).
     let mut current: Vec<i64> = decode_public_input(pi)?;
     if let Some(first) = artifact.trace.first() {
         if first.input() != current.as_slice() {
@@ -194,7 +247,12 @@ pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
             return Err(VerifyError::WiringMismatch { index });
         }
         match record {
-            OpRecord::Linear(r) => check_linear(artifact, r, &mut transcript)?,
+            OpRecord::Linear(r) => {
+                let challenge = ch
+                    .next(r.output.len())
+                    .ok_or(VerifyError::FreivaldsCheckFailed { op_id: r.op_id })?;
+                check_linear(artifact, r, &challenge)?;
+            }
             OpRecord::Requant(r) => check_requant(r)?,
             OpRecord::Activation(r) => check_activation(artifact, r)?,
             OpRecord::LayerNorm(r) => check_layernorm(artifact, r)?,
@@ -661,11 +719,12 @@ fn decode_public_input(pi: &pwm_core::public_input::PublicInput) -> Result<Vec<i
     Ok(hist.iter().map(|&m| pwm_core::field::decode(m)).collect())
 }
 
-/// Freivalds-check `out = W·x + bias` (specs.md §7).
+/// Freivalds-check `out = W·x + bias` (specs.md §7) with the supplied challenge
+/// vector `challenge` (length must equal the output dimension).
 fn check_linear(
     artifact: &AuditArtifact,
     r: &pwm_core::trace::LinearRec,
-    transcript: &mut Transcript,
+    challenge: &[Fp61],
 ) -> Result<(), VerifyError> {
     let w_tensor = artifact
         .weight(r.weight_id)
@@ -676,6 +735,9 @@ fn check_linear(
     }
     let rows = shape[0] as usize;
     let cols = shape[1] as usize;
+    if challenge.len() != rows || r.output.len() != rows || r.input.len() != cols {
+        return Err(VerifyError::FreivaldsCheckFailed { op_id: r.op_id });
+    }
     // Weight as i8 (values are in i8 range by the scale dtype invariant).
     let w_i8: Vec<i8> = w_tensor.data().iter().map(|c| c.value() as i8).collect();
     let bias: Vec<i64> = match r.bias_id {
@@ -687,9 +749,8 @@ fn check_linear(
         }
         None => alloc::vec![0i64; rows],
     };
-    let challenge: Vec<Fp61> = next_freivalds_r(transcript, rows);
-    let v = precompute_v(&challenge, &w_i8, rows, cols);
-    if check_linear_biased(&v, &r.input, &bias, &challenge, &r.output) {
+    let v = precompute_v(challenge, &w_i8, rows, cols);
+    if check_linear_biased(&v, &r.input, &bias, challenge, &r.output) {
         Ok(())
     } else {
         Err(VerifyError::FreivaldsCheckFailed { op_id: r.op_id })
