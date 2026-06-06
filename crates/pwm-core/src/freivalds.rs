@@ -146,4 +146,46 @@ mod tests {
         let v = precompute_v(&r, &w, 3, 3);
         assert!(check(&v, &x, &r, &z));
     }
+
+    /// Deterministic LCG for seeded pseudo-random fuzzing (no_std, no rand dep).
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state
+    }
+
+    /// Soundness fuzz (T-703): for many random (W, x, r), the correct `z = W·x`
+    /// always passes, and corrupting any single output element always fails.
+    #[test]
+    fn freivalds_soundness_fuzz() {
+        let mut s: u64 = 0x1234_5678_9abc_def0;
+        for _ in 0..200 {
+            let rows = 1 + (lcg(&mut s) % 6) as usize;
+            let cols = 1 + (lcg(&mut s) % 6) as usize;
+            let w: alloc::vec::Vec<i8> = (0..rows * cols)
+                .map(|_| (lcg(&mut s) % 255) as i64 as i8)
+                .collect();
+            let x: alloc::vec::Vec<i8> = (0..cols)
+                .map(|_| (lcg(&mut s) % 255) as i64 as i8)
+                .collect();
+            let r: alloc::vec::Vec<Fp61> = (0..rows).map(|_| Fp61::new(lcg(&mut s))).collect();
+            // Correct z = W·x.
+            let z: alloc::vec::Vec<i32> = (0..rows)
+                .map(|i| {
+                    (0..cols)
+                        .map(|j| w[i * cols + j] as i32 * x[j] as i32)
+                        .sum()
+                })
+                .collect();
+            let v = precompute_v(&r, &w, rows, cols);
+            assert!(check(&v, &x, &r, &z), "correct z must verify");
+            // Corrupt one element: must be rejected (challenge is random, so the
+            // 1/p escape probability is negligible across these cases).
+            let k = (lcg(&mut s) as usize) % rows;
+            let mut bad = z.clone();
+            bad[k] = bad[k].wrapping_add(1);
+            assert!(!check(&v, &x, &r, &bad), "corrupted z must be rejected");
+        }
+    }
 }

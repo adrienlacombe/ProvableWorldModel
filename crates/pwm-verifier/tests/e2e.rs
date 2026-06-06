@@ -101,6 +101,24 @@ fn input() -> Vec<i64> {
 }
 
 #[test]
+fn golden_vector_regression() {
+    // Golden vector (T-701): the committed quantized model's artifact is pinned by
+    // its exact output and the digest of its canonical bytes. A change to the
+    // serialization, the model, or the proof shape changes this digest.
+    use pwm_core::serialize::canonical_bytes;
+    use pwm_core::transcript::blake2s256;
+    let a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    let out: Vec<i64> = a.claimed_output.data().iter().map(|c| c.value()).collect();
+    assert_eq!(out, vec![4, -1], "golden output");
+    let digest = blake2s256(&canonical_bytes(&a));
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex, "7b88ea77a41ca3c4329c08649dd9e2a5188fe216e5a9c96d5f5e172a313ebff2",
+        "golden artifact digest changed"
+    );
+}
+
+#[test]
 fn artifact_roundtrips_and_reproduces() {
     use pwm_core::audit::AuditArtifact;
     use pwm_core::serialize::{canonical_bytes, from_canonical_bytes};
