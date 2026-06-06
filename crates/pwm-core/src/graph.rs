@@ -11,7 +11,7 @@
 use alloc::vec::Vec;
 
 use crate::commit::commit;
-use crate::serialize::{canonical_bytes, CanonicalEncode};
+use crate::serialize::{canonical_bytes, CanonicalDecode, CanonicalEncode, DecodeError, Reader};
 
 /// Domain tag for the architecture (op-graph) commitment.
 pub const TAG_GRAPH: &[u8; 16] = b"pwm.graph.v1\0\0\0\0";
@@ -147,6 +147,47 @@ impl CanonicalEncode for OpSpec {
     }
 }
 
+impl CanonicalDecode for OpSpec {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let tag = u8::decode(reader)?;
+        Ok(match tag {
+            0 => OpSpec::Linear {
+                op_id: u32::decode(reader)?,
+                weight_id: u32::decode(reader)?,
+                bias_id: Option::<u32>::decode(reader)?,
+                rows: u32::decode(reader)?,
+                cols: u32::decode(reader)?,
+            },
+            1 => OpSpec::Requant {
+                op_id: u32::decode(reader)?,
+                shift: u64::decode(reader)? as u32,
+                zero_point: i64::decode(reader)?,
+                clamp_lo: i64::decode(reader)?,
+                clamp_hi: i64::decode(reader)?,
+                rounding: u8::decode(reader)?,
+            },
+            2 => OpSpec::Activation {
+                op_id: u32::decode(reader)?,
+                table_id: u32::decode(reader)?,
+            },
+            3 => OpSpec::LayerNorm {
+                op_id: u32::decode(reader)?,
+                table_id: u32::decode(reader)?,
+                shift: u64::decode(reader)? as u32,
+                clamp_lo: i64::decode(reader)?,
+                clamp_hi: i64::decode(reader)?,
+                rounding: u8::decode(reader)?,
+            },
+            v => {
+                return Err(DecodeError::InvalidDiscriminant {
+                    type_name: "OpSpec",
+                    value: v,
+                })
+            }
+        })
+    }
+}
+
 /// The static op graph: an ordered op list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GraphSpec {
@@ -164,5 +205,13 @@ impl GraphSpec {
 impl CanonicalEncode for GraphSpec {
     fn encode(&self, out: &mut Vec<u8>) {
         self.ops.encode(out);
+    }
+}
+
+impl CanonicalDecode for GraphSpec {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(GraphSpec {
+            ops: Vec::<OpSpec>::decode(reader)?,
+        })
     }
 }

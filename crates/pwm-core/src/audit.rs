@@ -16,7 +16,7 @@ use crate::field::Fp61;
 use crate::fixed_point::{BoundError, BoundedInt};
 use crate::graph::GraphSpec;
 use crate::public_input::PublicInput;
-use crate::serialize::CanonicalEncode;
+use crate::serialize::{CanonicalDecode, CanonicalEncode, DecodeError, Reader};
 use crate::tables::ActivationTable;
 use crate::tensor::{Scale, Tensor, TensorError};
 use crate::trace::{trace_root, OpRecord};
@@ -90,6 +90,21 @@ impl CanonicalEncode for AuditArtifact {
         self.scales.encode(out);
         self.trace.encode(out);
         self.claimed_output.encode(out);
+    }
+}
+
+impl CanonicalDecode for AuditArtifact {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(AuditArtifact {
+            artifact_version: u32::decode(reader)?,
+            public_input: PublicInput::decode(reader)?,
+            graph: GraphSpec::decode(reader)?,
+            weights: Vec::<Tensor>::decode(reader)?,
+            tables: Vec::<ActivationTable>::decode(reader)?,
+            scales: Vec::<Scale>::decode(reader)?,
+            trace: Vec::<OpRecord>::decode(reader)?,
+            claimed_output: Tensor::decode(reader)?,
+        })
     }
 }
 

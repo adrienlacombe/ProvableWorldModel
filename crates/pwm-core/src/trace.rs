@@ -14,7 +14,7 @@
 
 use alloc::vec::Vec;
 
-use crate::serialize::CanonicalEncode;
+use crate::serialize::{CanonicalDecode, CanonicalEncode, DecodeError, Reader};
 use crate::transcript::blake2s256;
 
 /// Domain tag for a trace-record Merkle leaf.
@@ -214,6 +214,53 @@ impl CanonicalEncode for OpRecord {
             OpRecord::Activation(r) => r.encode(out),
             OpRecord::LayerNorm(r) => r.encode(out),
         }
+    }
+}
+
+impl CanonicalDecode for OpRecord {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let tag = u8::decode(reader)?;
+        Ok(match tag {
+            0 => OpRecord::Linear(LinearRec {
+                op_id: u32::decode(reader)?,
+                weight_id: u32::decode(reader)?,
+                bias_id: Option::<u32>::decode(reader)?,
+                input: Vec::<i64>::decode(reader)?,
+                output: Vec::<i64>::decode(reader)?,
+            }),
+            1 => OpRecord::Requant(RequantRec {
+                op_id: u32::decode(reader)?,
+                input: Vec::<i64>::decode(reader)?,
+                output: Vec::<i64>::decode(reader)?,
+                shift: u64::decode(reader)? as u32,
+                zero_point: i64::decode(reader)?,
+                clamp_lo: i64::decode(reader)?,
+                clamp_hi: i64::decode(reader)?,
+                rounding: u8::decode(reader)?,
+            }),
+            2 => OpRecord::Activation(ActivationRec {
+                op_id: u32::decode(reader)?,
+                table_id: u32::decode(reader)?,
+                input: Vec::<i64>::decode(reader)?,
+                output: Vec::<i64>::decode(reader)?,
+            }),
+            3 => OpRecord::LayerNorm(LayerNormRec {
+                op_id: u32::decode(reader)?,
+                table_id: u32::decode(reader)?,
+                input: Vec::<i64>::decode(reader)?,
+                output: Vec::<i64>::decode(reader)?,
+                shift: u64::decode(reader)? as u32,
+                clamp_lo: i64::decode(reader)?,
+                clamp_hi: i64::decode(reader)?,
+                rounding: u8::decode(reader)?,
+            }),
+            v => {
+                return Err(DecodeError::InvalidDiscriminant {
+                    type_name: "OpRecord",
+                    value: v,
+                })
+            }
+        })
     }
 }
 

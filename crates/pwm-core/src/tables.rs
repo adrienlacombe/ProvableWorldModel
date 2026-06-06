@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 
 use crate::commit::commit;
-use crate::serialize::{canonical_bytes, CanonicalEncode};
+use crate::serialize::{canonical_bytes, CanonicalDecode, CanonicalEncode, DecodeError, Reader};
 
 /// Domain tag for an activation-table commitment.
 pub const TAG_TABLE: &[u8; 16] = b"pwm.table.v1\0\0\0\0";
@@ -56,6 +56,16 @@ impl CanonicalEncode for ActivationTable {
         self.table_id.encode(out);
         self.lo.encode(out);
         self.outputs.encode(out);
+    }
+}
+
+impl CanonicalDecode for ActivationTable {
+    fn decode(reader: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(ActivationTable {
+            table_id: u32::decode(reader)?,
+            lo: i64::decode(reader)?,
+            outputs: Vec::<i64>::decode(reader)?,
+        })
     }
 }
 

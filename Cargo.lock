@@ -99,6 +99,10 @@ dependencies = [
 name = "pwm-testkit"
 version = "0.1.0"
 dependencies = [
+ "pwm-core",
+ "pwm-export",
+ "pwm-prover",
+ "pwm-verifier",
  "serde",
  "serde_json",
 ]
@@ -108,6 +112,8 @@ name = "pwm-verifier"
 version = "0.1.0"
 dependencies = [
  "pwm-core",
+ "pwm-export",
+ "pwm-prover",
 ]
 
 [[package]]

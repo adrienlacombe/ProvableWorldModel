@@ -101,6 +101,22 @@ fn input() -> Vec<i64> {
 }
 
 #[test]
+fn artifact_roundtrips_and_reproduces() {
+    use pwm_core::audit::AuditArtifact;
+    use pwm_core::serialize::{canonical_bytes, from_canonical_bytes};
+
+    let a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    // Reproducibility (T-706): proving the same inputs twice is byte-identical.
+    let a2 = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    assert_eq!(canonical_bytes(&a), canonical_bytes(&a2));
+    // Binary round-trip (PR-303): encode -> decode is the identity and still verifies.
+    let bytes = canonical_bytes(&a);
+    let decoded: AuditArtifact = from_canonical_bytes(&bytes).unwrap();
+    assert_eq!(decoded, a);
+    assert_eq!(verify(&decoded), Ok(()));
+}
+
+#[test]
 fn accept_valid_proof() {
     let artifact = prove_feedforward(&model(), &input(), out_binding()).unwrap();
     // Expected output: L1 -> [2,1,3,8] -> id -> L2 -> [14,-4] -> requant>>2 -> [4,-1].
