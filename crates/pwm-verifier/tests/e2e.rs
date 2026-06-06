@@ -11,7 +11,8 @@ use pwm_core::trace::OpRecord;
 use pwm_export::reference::{LayerSpec, Model};
 use pwm_prover::{prove_feedforward, prove_planning, OutputBinding};
 use pwm_verifier::{
-    verify, verify_interactive, verify_planning, verify_planning_batched, VerifyError,
+    verify, verify_interactive, verify_planning, verify_planning_batched, verify_sampled,
+    VerifyError,
 };
 
 fn weight(id: u32, rows: u32, cols: u32, vals: &[i8]) -> Tensor {
@@ -159,6 +160,34 @@ fn accept_interactive_verifier_secret_mode() {
     }
     assert!(matches!(
         verify_interactive(&b, &secret_r),
+        Err(VerifyError::FreivaldsCheckFailed { .. })
+    ));
+}
+
+#[test]
+fn sampled_audit_full_and_zero_coverage() {
+    let a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    // Full coverage: all (both) linear ops are Freivalds-checked.
+    assert_eq!(verify_sampled(&a, 100, 7), Ok(2));
+    // Zero coverage: no linear is Freivalds-checked, but structure/output still
+    // pass on an honest proof.
+    assert_eq!(verify_sampled(&a, 0, 7), Ok(0));
+}
+
+#[test]
+fn sampled_audit_full_coverage_rejects_tamper() {
+    let mut a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    let idx = a
+        .trace
+        .iter()
+        .position(|r| matches!(r, OpRecord::Linear(_)))
+        .unwrap();
+    if let OpRecord::Linear(r) = &mut a.trace[idx] {
+        r.output[0] += 1;
+    }
+    // At full coverage the tampered accumulator is Freivalds-rejected.
+    assert!(matches!(
+        verify_sampled(&a, 100, 7),
         Err(VerifyError::FreivaldsCheckFailed { .. })
     ));
 }

@@ -17,7 +17,7 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use pwm_core::block::{Block, BlockOp};
@@ -143,7 +143,21 @@ enum Challenges<'a> {
         /// `weight_id -> precomputed v = rᵀW`.
         vmap: &'a BTreeMap<u32, Vec<Fp61>>,
     },
+    /// Routine/sampled audit mode (backlog D-801): Freivalds-check only the sampled
+    /// subset of linear ops (statistical, sub-linear coverage). Unsampled linears
+    /// are trusted; non-linear ops are still exactly recomputed.
+    Sampled {
+        /// Transcript used to derive `r` for the sampled ops.
+        t: Transcript,
+        /// Indices (in linear-op order) that are checked.
+        sampled: BTreeSet<usize>,
+        /// Cursor over linear ops.
+        linear_idx: usize,
+    },
 }
+
+/// A Freivalds challenge for one linear op: `(r, v)` where `v = rᵀW`.
+type LinearChallenge = (Vec<Fp61>, Vec<Fp61>);
 
 /// Look up a weight tensor as a flat `i8` matrix with its `(rows, cols)`.
 fn weight_i8(
@@ -162,20 +176,21 @@ fn weight_i8(
 }
 
 impl Challenges<'_> {
-    /// The Freivalds challenge `r` and precomputed `v = rᵀW` for a linear op. In
+    /// The Freivalds challenge `r` and precomputed `v = rᵀW` for a linear op, or
+    /// `None` to skip the check (only in `Sampled` mode — the op is trusted). In
     /// `Fiat`/`Secret` mode `v` is computed per call; in `Batched` mode both are
     /// looked up from the shared per-weight maps (computed once).
-    fn challenge_and_v(
+    fn linear_step(
         &mut self,
         artifact: &AuditArtifact,
         rec: &pwm_core::trace::LinearRec,
-    ) -> Result<(Vec<Fp61>, Vec<Fp61>), VerifyError> {
+    ) -> Result<Option<LinearChallenge>, VerifyError> {
         match self {
             Challenges::Fiat(t) => {
                 let (w, rows, cols) = weight_i8(artifact, rec.weight_id)?;
                 let r = next_freivalds_r(t, rows);
                 let v = precompute_v(&r, &w, rows, cols);
-                Ok((r, v))
+                Ok(Some((r, v)))
             }
             Challenges::Secret { rs, idx } => {
                 let (w, rows, cols) = weight_i8(artifact, rec.weight_id)?;
@@ -186,7 +201,7 @@ impl Challenges<'_> {
                     .clone();
                 *idx += 1;
                 let v = precompute_v(&r, &w, rows, cols);
-                Ok((r, v))
+                Ok(Some((r, v)))
             }
             Challenges::Batched { rmap, vmap } => {
                 let r = rmap
@@ -197,7 +212,22 @@ impl Challenges<'_> {
                     .get(&rec.weight_id)
                     .ok_or(VerifyError::FreivaldsCheckFailed { op_id: rec.op_id })?
                     .clone();
-                Ok((r, v))
+                Ok(Some((r, v)))
+            }
+            Challenges::Sampled {
+                t,
+                sampled,
+                linear_idx,
+            } => {
+                let this = *linear_idx;
+                *linear_idx += 1;
+                if !sampled.contains(&this) {
+                    return Ok(None); // trusted (statistical coverage)
+                }
+                let (w, rows, cols) = weight_i8(artifact, rec.weight_id)?;
+                let r = next_freivalds_r(t, rows);
+                let v = precompute_v(&r, &w, rows, cols);
+                Ok(Some((r, v)))
             }
         }
     }
@@ -224,6 +254,49 @@ pub fn verify_interactive(
         idx: 0,
     };
     verify_with(artifact, &mut ch)
+}
+
+/// Verify a proof in **routine/sampled audit mode** (backlog D-801): Freivalds-check
+/// only a sampled subset of `sample` linear ops (chosen deterministically from
+/// `seed` and the trace root); the remaining linears are *trusted*. All non-linear
+/// ops, the wiring, and the output/commitment checks are still exact and complete.
+///
+/// This is **statistical, sub-linear coverage**, not full soundness — an undetected
+/// wrong accumulator in an unsampled linear can slip through. Returns the number of
+/// linear ops actually Freivalds-checked so the caller can reason about coverage.
+/// Use [`verify`] for full soundness.
+pub fn verify_sampled(
+    artifact: &AuditArtifact,
+    sample: usize,
+    seed: u64,
+) -> Result<usize, VerifyError> {
+    // Count linear ops in the trace.
+    let n_linear = artifact
+        .trace
+        .iter()
+        .filter(|r| matches!(r, OpRecord::Linear(_)))
+        .count();
+    // Deterministically choose `min(sample, n_linear)` linear-op indices from a
+    // transcript bound to the trace root and the seed.
+    let troot = artifact.trace_root();
+    let mut sel = audit_transcript(&artifact.public_input, &troot);
+    sel.absorb_u64(b"audit.seed", seed);
+    let mut sampled = BTreeSet::new();
+    let want = sample.min(n_linear);
+    let mut guard = 0u32;
+    while sampled.len() < want && guard < 100_000 {
+        let idx = (sel.challenge_u64(b"audit.pick") as usize) % n_linear.max(1);
+        sampled.insert(idx);
+        guard += 1;
+    }
+    let checked = sampled.len();
+    let mut ch = Challenges::Sampled {
+        t: audit_transcript(&artifact.public_input, &troot),
+        sampled,
+        linear_idx: 0,
+    };
+    verify_with(artifact, &mut ch)?;
+    Ok(checked)
 }
 
 /// The shared verification body, parameterized by the Freivalds challenge source.
@@ -297,8 +370,9 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
         }
         match record {
             OpRecord::Linear(r) => {
-                let (challenge, v) = ch.challenge_and_v(artifact, r)?;
-                check_linear(artifact, r, &v, &challenge)?;
+                if let Some((challenge, v)) = ch.linear_step(artifact, r)? {
+                    check_linear(artifact, r, &v, &challenge)?;
+                }
             }
             OpRecord::Requant(r) => check_requant(r)?,
             OpRecord::Activation(r) => check_activation(artifact, r)?,
