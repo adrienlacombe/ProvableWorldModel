@@ -134,21 +134,70 @@ enum Challenges<'a> {
         /// Cursor into `rs`.
         idx: usize,
     },
+    /// Batched/amortized mode (backlog D-806): `r` and the precomputed `v = rᵀW`
+    /// are keyed by `weight_id` and **shared across all candidates**, so `v` is
+    /// computed once per distinct weight matrix instead of once per instance.
+    Batched {
+        /// `weight_id -> challenge vector r` (one per distinct weight).
+        rmap: &'a BTreeMap<u32, Vec<Fp61>>,
+        /// `weight_id -> precomputed v = rᵀW`.
+        vmap: &'a BTreeMap<u32, Vec<Fp61>>,
+    },
+}
+
+/// Look up a weight tensor as a flat `i8` matrix with its `(rows, cols)`.
+fn weight_i8(
+    artifact: &AuditArtifact,
+    weight_id: u32,
+) -> Result<(Vec<i8>, usize, usize), VerifyError> {
+    let w = artifact
+        .weight(weight_id)
+        .ok_or(VerifyError::MissingBinding("weight"))?;
+    let shape = w.shape();
+    if shape.len() != 2 {
+        return Err(VerifyError::MissingBinding("weight_shape"));
+    }
+    let i8s = w.data().iter().map(|c| c.value() as i8).collect();
+    Ok((i8s, shape[0] as usize, shape[1] as usize))
 }
 
 impl Challenges<'_> {
-    /// The next challenge vector of length `rows`, or `None` if a secret vector is
-    /// missing or has the wrong length.
-    fn next(&mut self, rows: usize) -> Option<Vec<Fp61>> {
+    /// The Freivalds challenge `r` and precomputed `v = rᵀW` for a linear op. In
+    /// `Fiat`/`Secret` mode `v` is computed per call; in `Batched` mode both are
+    /// looked up from the shared per-weight maps (computed once).
+    fn challenge_and_v(
+        &mut self,
+        artifact: &AuditArtifact,
+        rec: &pwm_core::trace::LinearRec,
+    ) -> Result<(Vec<Fp61>, Vec<Fp61>), VerifyError> {
         match self {
-            Challenges::Fiat(t) => Some(next_freivalds_r(t, rows)),
+            Challenges::Fiat(t) => {
+                let (w, rows, cols) = weight_i8(artifact, rec.weight_id)?;
+                let r = next_freivalds_r(t, rows);
+                let v = precompute_v(&r, &w, rows, cols);
+                Ok((r, v))
+            }
             Challenges::Secret { rs, idx } => {
-                let r = rs.get(*idx)?;
-                if r.len() != rows {
-                    return None;
-                }
+                let (w, rows, cols) = weight_i8(artifact, rec.weight_id)?;
+                let r = rs
+                    .get(*idx)
+                    .filter(|r| r.len() == rows)
+                    .ok_or(VerifyError::FreivaldsCheckFailed { op_id: rec.op_id })?
+                    .clone();
                 *idx += 1;
-                Some(r.clone())
+                let v = precompute_v(&r, &w, rows, cols);
+                Ok((r, v))
+            }
+            Challenges::Batched { rmap, vmap } => {
+                let r = rmap
+                    .get(&rec.weight_id)
+                    .ok_or(VerifyError::FreivaldsCheckFailed { op_id: rec.op_id })?
+                    .clone();
+                let v = vmap
+                    .get(&rec.weight_id)
+                    .ok_or(VerifyError::FreivaldsCheckFailed { op_id: rec.op_id })?
+                    .clone();
+                Ok((r, v))
             }
         }
     }
@@ -248,10 +297,8 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
         }
         match record {
             OpRecord::Linear(r) => {
-                let challenge = ch
-                    .next(r.output.len())
-                    .ok_or(VerifyError::FreivaldsCheckFailed { op_id: r.op_id })?;
-                check_linear(artifact, r, &challenge)?;
+                let (challenge, v) = ch.challenge_and_v(artifact, r)?;
+                check_linear(artifact, r, &v, &challenge)?;
             }
             OpRecord::Requant(r) => check_requant(r)?,
             OpRecord::Activation(r) => check_activation(artifact, r)?,
@@ -315,6 +362,87 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
         }
     }
     // 3. The selection is the sound argmin.
+    verify_argmin(
+        &proof.costs,
+        proof.selected_index as usize,
+        proof.selected_cost,
+    )
+    .map_err(|_| VerifyError::ArgminViolation)
+}
+
+/// Verify fixed-candidate planning in **batched/amortized mode** (backlog D-806).
+///
+/// All candidates share the same committed model, so the Freivalds `v = rᵀW` is
+/// precomputed **once per distinct weight matrix** and reused across every
+/// candidate × instance, instead of once per instance. The shared challenges are
+/// bound to *all* candidate trace roots (so they depend on every committed
+/// accumulator). Verdict-equivalent to [`verify_planning`]; only cheaper. Falls
+/// back to per-candidate verification if the candidates do not share a model.
+pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError> {
+    if proof.candidates.is_empty() {
+        return Err(VerifyError::NoCandidates);
+    }
+    if proof.costs.len() != proof.candidates.len() {
+        return Err(VerifyError::ArgminViolation);
+    }
+    let c0 = &proof.candidates[0];
+    for c in &proof.candidates[1..] {
+        let same = c.graph == c0.graph
+            && c.weights == c0.weights
+            && c.tables == c0.tables
+            && c.public_input.model_commitment == c0.public_input.model_commitment
+            && c.public_input.quantization_commitment == c0.public_input.quantization_commitment;
+        if !same {
+            return verify_planning(proof);
+        }
+    }
+
+    // Bind the shared challenges to every candidate's committed trace root.
+    let mut t = Transcript::new(b"pwm.batched.v1");
+    t.absorb_u64(b"candidates", proof.candidates.len() as u64);
+    for c in &proof.candidates {
+        t.absorb(b"trace_root", &c.trace_root());
+    }
+    // One r + precomputed v per distinct weight matrix (sorted, deterministic).
+    let mut weight_ids: Vec<u32> = c0
+        .graph
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            OpSpec::Linear { weight_id, .. } => Some(*weight_id),
+            _ => None,
+        })
+        .collect();
+    weight_ids.sort_unstable();
+    weight_ids.dedup();
+    let mut rmap: BTreeMap<u32, Vec<Fp61>> = BTreeMap::new();
+    let mut vmap: BTreeMap<u32, Vec<Fp61>> = BTreeMap::new();
+    for wid in weight_ids {
+        let (w, rows, cols) = weight_i8(c0, wid)?;
+        let r = t.challenge_fp61_vec(b"freivalds.r", rows);
+        let v = precompute_v(&r, &w, rows, cols); // computed once per weight
+        rmap.insert(wid, r);
+        vmap.insert(wid, v);
+    }
+
+    for (index, candidate) in proof.candidates.iter().enumerate() {
+        let mut ch = Challenges::Batched {
+            rmap: &rmap,
+            vmap: &vmap,
+        };
+        verify_with(candidate, &mut ch).map_err(|_| VerifyError::Candidate { index })?;
+        let output: Vec<i64> = candidate
+            .claimed_output
+            .data()
+            .iter()
+            .map(|c| c.value())
+            .collect();
+        if output.len() != proof.goal.len() || mse_cost(&output, &proof.goal) != proof.costs[index]
+        {
+            return Err(VerifyError::CostMismatch { index });
+        }
+    }
+
     verify_argmin(
         &proof.costs,
         proof.selected_index as usize,
@@ -751,27 +879,18 @@ fn decode_public_input(pi: &pwm_core::public_input::PublicInput) -> Result<Vec<i
 }
 
 /// Freivalds-check `out = W·x + bias` (specs.md §7) with the supplied challenge
-/// vector `challenge` (length must equal the output dimension).
+/// `r` and the precomputed `v = rᵀW` (lengths must match the op's dimensions).
 fn check_linear(
     artifact: &AuditArtifact,
-    r: &pwm_core::trace::LinearRec,
-    challenge: &[Fp61],
+    rec: &pwm_core::trace::LinearRec,
+    v: &[Fp61],
+    r: &[Fp61],
 ) -> Result<(), VerifyError> {
-    let w_tensor = artifact
-        .weight(r.weight_id)
-        .ok_or(VerifyError::MissingBinding("weight"))?;
-    let shape = w_tensor.shape();
-    if shape.len() != 2 {
-        return Err(VerifyError::MissingBinding("weight_shape"));
+    let (_, rows, cols) = weight_i8(artifact, rec.weight_id)?;
+    if r.len() != rows || v.len() != cols || rec.output.len() != rows || rec.input.len() != cols {
+        return Err(VerifyError::FreivaldsCheckFailed { op_id: rec.op_id });
     }
-    let rows = shape[0] as usize;
-    let cols = shape[1] as usize;
-    if challenge.len() != rows || r.output.len() != rows || r.input.len() != cols {
-        return Err(VerifyError::FreivaldsCheckFailed { op_id: r.op_id });
-    }
-    // Weight as i8 (values are in i8 range by the scale dtype invariant).
-    let w_i8: Vec<i8> = w_tensor.data().iter().map(|c| c.value() as i8).collect();
-    let bias: Vec<i64> = match r.bias_id {
+    let bias: Vec<i64> = match rec.bias_id {
         Some(id) => {
             let b = artifact
                 .weight(id)
@@ -780,11 +899,10 @@ fn check_linear(
         }
         None => alloc::vec![0i64; rows],
     };
-    let v = precompute_v(challenge, &w_i8, rows, cols);
-    if check_linear_biased(&v, &r.input, &bias, challenge, &r.output) {
+    if check_linear_biased(v, &rec.input, &bias, r, &rec.output) {
         Ok(())
     } else {
-        Err(VerifyError::FreivaldsCheckFailed { op_id: r.op_id })
+        Err(VerifyError::FreivaldsCheckFailed { op_id: rec.op_id })
     }
 }
 

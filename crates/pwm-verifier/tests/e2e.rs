@@ -10,7 +10,9 @@ use pwm_core::tensor::{Dtype, Scale, Tensor};
 use pwm_core::trace::OpRecord;
 use pwm_export::reference::{LayerSpec, Model};
 use pwm_prover::{prove_feedforward, prove_planning, OutputBinding};
-use pwm_verifier::{verify, verify_interactive, verify_planning, VerifyError};
+use pwm_verifier::{
+    verify, verify_interactive, verify_planning, verify_planning_batched, VerifyError,
+};
 
 fn weight(id: u32, rows: u32, cols: u32, vals: &[i8]) -> Tensor {
     let data = vals
@@ -276,6 +278,31 @@ fn accept_valid_planning_proof() {
     assert_eq!(proof.selected_index, 0); // first minimum
     assert_eq!(proof.selected_cost, 0);
     assert_eq!(verify_planning(&proof), Ok(()));
+}
+
+#[test]
+fn accept_batched_planning_equivalent_to_per_candidate() {
+    let proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Batched (amortized) verification agrees with per-candidate verification.
+    assert_eq!(verify_planning(&proof), Ok(()));
+    assert_eq!(verify_planning_batched(&proof), Ok(()));
+}
+
+#[test]
+fn reject_batched_planning_tampered_candidate() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    let idx = proof.candidates[1]
+        .trace
+        .iter()
+        .position(|r| matches!(r, OpRecord::Linear(_)))
+        .unwrap();
+    if let OpRecord::Linear(r) = &mut proof.candidates[1].trace[idx] {
+        r.output[0] += 1;
+    }
+    assert!(matches!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::Candidate { index: 1 })
+    ));
 }
 
 #[test]
