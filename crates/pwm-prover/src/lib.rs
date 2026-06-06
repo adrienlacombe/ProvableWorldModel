@@ -541,6 +541,49 @@ pub fn prove_block(
                     one,
                 }
             }
+            BlockOp::Slice {
+                op_id,
+                in_buf,
+                out_buf,
+                start,
+                len,
+                ..
+            } => {
+                let x = get(&bufs, in_buf)?;
+                let s = start as usize;
+                let e = s + len as usize;
+                if e > x.len() {
+                    return Err(BlockError::Shape);
+                }
+                let out = x[s..e].to_vec();
+                bufs.insert(out_buf, out.clone());
+                BlockOp::Slice {
+                    op_id,
+                    in_buf,
+                    out_buf,
+                    start,
+                    len,
+                    out,
+                }
+            }
+            BlockOp::Concat {
+                op_id,
+                in_bufs,
+                out_buf,
+                ..
+            } => {
+                let mut out = Vec::new();
+                for id in &in_bufs {
+                    out.extend(get(&bufs, *id)?);
+                }
+                bufs.insert(out_buf, out.clone());
+                BlockOp::Concat {
+                    op_id,
+                    in_bufs,
+                    out_buf,
+                    out,
+                }
+            }
         };
         out_ops.push(filled);
     }

@@ -264,6 +264,97 @@ fn reject_tampered_attention_scores() {
 }
 
 #[test]
+fn accept_multiposition_attention_with_projection() {
+    // Per-position Q projection (slice -> Freivalds linear -> concat) feeding the
+    // attention core, with K and V supplied pre-projected. Wq = I, so Q = x.
+    let wq = vec![w(30, 2, 2, &[1, 0, 0, 1])];
+    let block = Block {
+        input_bufs: vec![0, 6, 7], // x (2 positions x dim 2), K, V
+        ops: vec![
+            BlockOp::Slice {
+                op_id: 1,
+                in_buf: 0,
+                out_buf: 1,
+                start: 0,
+                len: 2,
+                out: vec![],
+            },
+            BlockOp::Linear {
+                op_id: 2,
+                weight_id: 30,
+                bias_id: None,
+                in_buf: 1,
+                out_buf: 2,
+                out: vec![],
+            },
+            BlockOp::Slice {
+                op_id: 3,
+                in_buf: 0,
+                out_buf: 3,
+                start: 2,
+                len: 2,
+                out: vec![],
+            },
+            BlockOp::Linear {
+                op_id: 4,
+                weight_id: 30,
+                bias_id: None,
+                in_buf: 3,
+                out_buf: 4,
+                out: vec![],
+            },
+            BlockOp::Concat {
+                op_id: 5,
+                in_bufs: vec![2, 4],
+                out_buf: 5,
+                out: vec![],
+            }, // Q
+            BlockOp::MatMul {
+                op_id: 6,
+                a_buf: 5,
+                b_buf: 6,
+                out_buf: 8,
+                out: vec![],
+                rows: 2,
+                inner: 2,
+                cols: 2,
+                transpose_b: true,
+            },
+            BlockOp::Softmax {
+                op_id: 7,
+                table_id: 3,
+                in_buf: 8,
+                out_buf: 9,
+                out: vec![],
+                row_len: 2,
+                one: 600,
+            },
+            BlockOp::MatMul {
+                op_id: 8,
+                a_buf: 9,
+                b_buf: 7,
+                out_buf: 10,
+                out: vec![],
+                rows: 2,
+                inner: 2,
+                cols: 2,
+                transpose_b: false,
+            },
+        ],
+        output_buf: 10,
+    };
+    let inputs = vec![
+        (0, vec![1, 0, 0, 1]), // x
+        (6, vec![1, 0, 0, 1]), // K
+        (7, vec![1, 0, 0, 1]), // V
+    ];
+    let proven = prove_block(&block, &wq, &exp_tables(), &inputs).unwrap();
+    let mut t = transcript_for(&proven, &inputs);
+    let out = verify_block(&proven, &wq, &exp_tables(), &inputs, &mut t).unwrap();
+    assert_eq!(out, vec![400, 200, 200, 400]);
+}
+
+#[test]
 fn reject_tampered_block_residual() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the residual add output (op_id 11) -> exact recompute rejects.

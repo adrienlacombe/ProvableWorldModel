@@ -199,6 +199,33 @@ pub enum BlockOp {
         /// Fixed-point unit the row sums to.
         one: i64,
     },
+    /// Contiguous slice `out = in_buf[start..start+len]` (split a per-position
+    /// row out of a packed buffer, or one AdaLN parameter out of the 6-way chunk).
+    Slice {
+        /// Op id.
+        op_id: u32,
+        /// Source buffer.
+        in_buf: u32,
+        /// Output buffer.
+        out_buf: u32,
+        /// Start offset.
+        start: u32,
+        /// Length.
+        len: u32,
+        /// Claimed output.
+        out: Vec<i64>,
+    },
+    /// Concatenate `in_bufs` in order (recombine per-position projections).
+    Concat {
+        /// Op id.
+        op_id: u32,
+        /// Source buffers, concatenated in order.
+        in_bufs: Vec<u32>,
+        /// Output buffer.
+        out_buf: u32,
+        /// Claimed output.
+        out: Vec<i64>,
+    },
 }
 
 impl BlockOp {
@@ -213,7 +240,9 @@ impl BlockOp {
             | BlockOp::Gate { op_id, .. }
             | BlockOp::Add { op_id, .. }
             | BlockOp::MatMul { op_id, .. }
-            | BlockOp::Softmax { op_id, .. } => *op_id,
+            | BlockOp::Softmax { op_id, .. }
+            | BlockOp::Slice { op_id, .. }
+            | BlockOp::Concat { op_id, .. } => *op_id,
         }
     }
 
@@ -228,7 +257,9 @@ impl BlockOp {
             | BlockOp::Gate { out_buf, .. }
             | BlockOp::Add { out_buf, .. }
             | BlockOp::MatMul { out_buf, .. }
-            | BlockOp::Softmax { out_buf, .. } => *out_buf,
+            | BlockOp::Softmax { out_buf, .. }
+            | BlockOp::Slice { out_buf, .. }
+            | BlockOp::Concat { out_buf, .. } => *out_buf,
         }
     }
 
@@ -243,7 +274,9 @@ impl BlockOp {
             | BlockOp::Gate { out, .. }
             | BlockOp::Add { out, .. }
             | BlockOp::MatMul { out, .. }
-            | BlockOp::Softmax { out, .. } => out,
+            | BlockOp::Softmax { out, .. }
+            | BlockOp::Slice { out, .. }
+            | BlockOp::Concat { out, .. } => out,
         }
     }
 
@@ -258,6 +291,8 @@ impl BlockOp {
             BlockOp::Add { .. } => 6,
             BlockOp::MatMul { .. } => 7,
             BlockOp::Softmax { .. } => 8,
+            BlockOp::Slice { .. } => 9,
+            BlockOp::Concat { .. } => 10,
         }
     }
 
@@ -440,6 +475,32 @@ impl CanonicalEncode for BlockOp {
                 o.encode(out);
                 row_len.encode(out);
                 one.encode(out);
+            }
+            BlockOp::Slice {
+                op_id,
+                in_buf,
+                out_buf,
+                start,
+                len,
+                out: o,
+            } => {
+                op_id.encode(out);
+                in_buf.encode(out);
+                out_buf.encode(out);
+                start.encode(out);
+                len.encode(out);
+                o.encode(out);
+            }
+            BlockOp::Concat {
+                op_id,
+                in_bufs,
+                out_buf,
+                out: o,
+            } => {
+                op_id.encode(out);
+                in_bufs.encode(out);
+                out_buf.encode(out);
+                o.encode(out);
             }
         }
     }

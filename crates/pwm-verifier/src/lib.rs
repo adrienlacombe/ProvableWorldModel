@@ -630,6 +630,37 @@ pub fn verify_block(
                 }
                 bufs.insert(*out_buf, out.clone());
             }
+            BlockOp::Slice {
+                op_id,
+                in_buf,
+                out_buf,
+                start,
+                len,
+                out,
+            } => {
+                let x = get(&bufs, *in_buf)?;
+                let s = *start as usize;
+                let e = s + *len as usize;
+                if e > x.len() || x[s..e] != out[..] {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
+            BlockOp::Concat {
+                op_id,
+                in_bufs,
+                out_buf,
+                out,
+            } => {
+                let mut expected = Vec::new();
+                for id in in_bufs {
+                    expected.extend(get(&bufs, *id)?);
+                }
+                if &expected != out {
+                    return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                bufs.insert(*out_buf, out.clone());
+            }
         }
     }
     get(&bufs, block.output_buf)
