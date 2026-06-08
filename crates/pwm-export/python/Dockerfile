@@ -8,7 +8,7 @@ FROM python:3.12-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir torch numpy pillow
+RUN pip install --no-cache-dir torch numpy pillow pyarrow imageio imageio-ffmpeg
 WORKDIR /app
 COPY . /app
 CMD ["sh", "scripts/docker_export_real.sh"]

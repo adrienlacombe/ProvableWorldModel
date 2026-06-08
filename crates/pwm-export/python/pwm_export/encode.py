@@ -92,14 +92,20 @@ def load_frames(gif_path: str, n: int) -> tuple[list, int]:
 
 
 @torch.no_grad()
+def encode_observation(sd: dict, pil_frames: list) -> np.ndarray:
+    """Encode RGB observation frames into latents `[n, 192]` exactly as le-wm does:
+    the ViT encoder's CLS token through the projector MLP."""
+    pixels = torch.stack([_prep(f) for f in pil_frames])
+    return _mlp(sd, vit_cls(sd, pixels), "projector").numpy()
+
+
+@torch.no_grad()
 def encode_history(sd: dict, gif_path: str, history: int, action_dim: int = 10):
     """Encode `history` real observation frames into a real latent history `[history,
     192]` and an action embedding `[history, 192]`. The GIF has no action labels, so
     the action is a small stand-in; the latents are real. Returns `(emb, act_emb,
     total_frames)` as NumPy arrays."""
     frames, total = load_frames(gif_path, history)
-    pixels = torch.stack([_prep(f) for f in frames])
-    cls = vit_cls(sd, pixels)
-    emb = _mlp(sd, cls, "projector")
-    act_emb = encode_action(sd, torch.zeros(history, action_dim))
-    return emb.numpy(), act_emb.numpy(), total
+    emb = encode_observation(sd, frames)
+    act_emb = encode_action(sd, torch.zeros(history, action_dim)).numpy()
+    return emb, act_emb, total
