@@ -8,7 +8,7 @@ real torch parameters: `torch.load` → dim ingest (`pwm_export.lewm`) → int8
 quantize (`quantize`) → BatchNorm fold (`fold`) → committed manifest (`export`).
 
 le-wm's V0 encoder uses `pretrained: false` (trained from scratch), so a random
-init is faithful to the V0 config — no pretrained checkpoint is required to
+init is faithful to the V0 config, so no pretrained checkpoint is required to
 exercise the full export and the proof relations (which attest the *quantized*
 model regardless of weight values). Point at a real trained checkpoint by setting
 `LEWM_CKPT`; otherwise a fresh random V0 instance is built.
@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from module import ARPredictor, Embedder, MLP  # upstream le-wm
 from pwm_export import export, fold, ingest, lewm, quantize
 
-# V0 config — specs.md §2 / config/train/model/lewm.yaml.
+# V0 config (specs.md §2 / config/train/model/lewm.yaml).
 EMBED, HIST, DEPTH, HEADS, DIM_HEAD, MLP_DIM, ACTION_DIM = 192, 3, 6, 16, 64, 2048, 4
 
 
@@ -88,10 +88,10 @@ def main() -> None:
     named = [(i, name, w) for i, (name, w) in enumerate(linears)]
     tables = [{"table_id": 0, "lo": -4, "outputs": [0, 0, 0, 1, 2, 3, 4, 5, 6]}]
     m = export.export_graph(named, tables)["manifest"]
-    print("E-205: manifest commitments —")
+    print("E-205: manifest commitments:")
     for k, v in m.items():
-        print(f"  {k:24} = {v[:32]}…")
-    print("\n✅ real le-wm V0 export ran end-to-end.")
+        print(f"  {k:24} = {v[:32]}...")
+    print("\nreal le-wm V0 quantize + fold + commit ran (the proof itself is the Rust prover's job).")
 
 
 if __name__ == "__main__":

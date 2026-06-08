@@ -24,6 +24,9 @@ services:
     volumes:
       - artifact:/shared
     tty: true
+    # The prover exits first; with --exit-code-from this can trigger an abort
+    # before the verifier finishes. Give it room to print the full challenge game.
+    stop_grace_period: 30s
 
   # Optional heavy profile: the real le-wm export (PyTorch, multi-GB image).
   #   docker compose --profile real up --build real-export

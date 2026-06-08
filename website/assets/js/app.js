@@ -12,9 +12,14 @@
   const toggle = $("#navToggle");
   const links = $(".nav-links");
   if (toggle && links) {
-    toggle.addEventListener("click", () => links.classList.toggle("open"));
-    $$(".nav-links a").forEach((a) => a.addEventListener("click", () => links.classList.remove("open")));
+    const setNav = (open) => {
+      links.classList.toggle("open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    toggle.addEventListener("click", () => setNav(!links.classList.contains("open")));
+    $$(".nav-links a").forEach((a) => a.addEventListener("click", () => setNav(false)));
   }
+  const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // --- reveal on scroll ---
   const revealTargets = $$(".section-head, .card, .flow-step, .crate, .start-card, .stat, .tiers, .compare, .frei");
@@ -60,6 +65,11 @@
     const play = () => {
       clear();
       setVerdict();
+      if (reduceMotion) {
+        steps.forEach((s) => s.classList.add("is-done"));
+        steps[steps.length - 1].classList.add("is-active");
+        return;
+      }
       let i = 0;
       timer = setInterval(() => {
         if (i > 0) steps[i - 1].classList.add("is-done");
@@ -169,7 +179,11 @@
   if (tabs.length) {
     tabs.forEach((tab) => tab.addEventListener("click", () => {
       const tier = tab.dataset.tier;
-      tabs.forEach((t) => t.classList.toggle("is-active", t === tab));
+      tabs.forEach((t) => {
+        const on = t === tab;
+        t.classList.toggle("is-active", on);
+        t.setAttribute("aria-selected", on ? "true" : "false");
+      });
       $$(".tier-panel").forEach((p) => p.classList.toggle("is-active", p.dataset.tier === tier));
     }));
   }

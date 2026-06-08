@@ -8,7 +8,7 @@
   --border: #1f2c4d;
   --text: #e9eef9;
   --muted: #94a2c4;
-  --muted-2: #6b7aa0;
+  --muted-2: #8c99bd;
   --accent: #5eead4;
   --accent-2: #a78bfa;
   --accent-3: #38bdf8;
@@ -63,6 +63,15 @@ h1, h2, h3 { line-height: 1.15; letter-spacing: -0.02em; margin: 0; }
 .nav-cta { padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px; color: var(--text) !important; }
 .nav-cta:hover { border-color: var(--accent); }
 .nav-toggle { display: none; background: none; border: none; color: var(--text); font-size: 1.6rem; cursor: pointer; }
+
+/* keyboard focus: a visible ring on every interactive element */
+a:focus-visible,
+.btn:focus-visible,
+.tier-tab:focus-visible,
+.nav-toggle:focus-visible,
+.nav-cta:focus-visible,
+.switch:focus-within,
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
 
 /* buttons */
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 999px; font-weight: 600; font-size: 0.95rem; cursor: pointer; border: 1px solid transparent; transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease; }
