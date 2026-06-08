@@ -114,9 +114,9 @@ fn encoder() -> Block {
                 out_buf: 3,
                 out: vec![],
             }, // + positional
-            bl(3, 11, 3, 4),      // Q
-            bl(4, 12, 3, 5),      // K
-            bl(5, 13, 3, 6),      // V
+            bl(3, 11, 3, 4), // Q
+            bl(4, 12, 3, 5), // K
+            bl(5, 13, 3, 6), // V
             mm(6, 4, 5, 7, true), // scores = Q·Kᵀ
             BlockOp::Softmax {
                 op_id: 7,
@@ -136,7 +136,7 @@ fn encoder() -> Block {
                 out_buf: 11,
                 out: vec![],
             }, // residual 1
-            bl(11, 15, 11, 12), // FFN fc1 -> [2,4]
+            bl(11, 15, 11, 12),    // FFN fc1 -> [2,4]
             BlockOp::Activation {
                 op_id: 12,
                 table_id: 30,
@@ -144,7 +144,7 @@ fn encoder() -> Block {
                 out_buf: 13,
                 out: vec![],
             }, // GELU
-            bl(13, 16, 13, 14), // FFN fc2 -> [2,2]
+            bl(13, 16, 13, 14),    // FFN fc2 -> [2,2]
             BlockOp::Add {
                 op_id: 14,
                 a_buf: 11,
