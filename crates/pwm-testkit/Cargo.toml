@@ -13,6 +13,12 @@ publish = false
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The `pwm` demo CLI (PR-304) drives the full prove -> serialize -> decode ->
+# verify path, so it links every first-party crate. Test/tooling only.
+pwm-core = { workspace = true }
+pwm-export = { workspace = true }
+pwm-prover = { workspace = true }
+pwm-verifier = { workspace = true }
 
 [lints]
 workspace = true

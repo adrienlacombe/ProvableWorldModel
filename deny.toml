@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# cargo-deny configuration for the License / SPDX merge gate
-# (docs/spec/07-testing-strategy.md#ci-gates). Enforces the Apache-2.0 audit
-# discipline of RFC-0015: only permissive licenses compatible with the project's
-# Apache-2.0 license and the vendored Apache-2.0 proving substrate are allowed.
+# cargo-deny configuration for the License / SPDX merge gate (specs.md §11.2).
+# Only permissive licenses compatible with the project's Apache-2.0 license are
+# allowed. Post-pivot there is no vendored proving substrate; the dependency set
+# is small (blake2 and its transitive deps).
 
 [licenses]
-# Permissive licenses compatible with Apache-2.0. The first-party crates and the
-# vendored Stwo / stwo-circuits trees are Apache-2.0; MIT/BSD/ISC/Unicode cover
-# the common transitive dependencies introduced once vendoring lands (#24, #25).
+# Permissive licenses compatible with Apache-2.0. The first-party crates are
+# Apache-2.0; MIT/BSD/ISC/Unicode/Zlib cover the transitive dependencies of
+# blake2 (the only crypto dependency).
 allow = [
     "Apache-2.0",
     "MIT",

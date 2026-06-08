@@ -10,11 +10,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-# Vendored Stwo, field types only (RFC-0002 re-export). The workspace pins
-# default-features = false, so this is no_std and pulls in no prover/FRI/PCS/
-# channel code: the one permitted substrate edge for pwm-core (INV-ARCH-01).
-stwo = { workspace = true }
-# Blake2s for the public-input digest, commitments, and transcript (RFC-0014).
+# Blake2s for the public-input digest, commitments, and Fiat-Shamir transcript
+# (specs.md §4, §6). The only crypto dependency; no_std, no proving substrate
+# (INV-ARCH-01). The field types (M31, audit field Fp61) are native to this crate.
 blake2 = { workspace = true }
 
 [dev-dependencies]
@@ -22,8 +20,6 @@ blake2 = { workspace = true }
 # well-formed JSON and round-trips. Never a runtime dependency of pwm-core, so
 # the no_std / dependency-free trust-root guarantee is unaffected.
 serde_json = { workspace = true }
-# Test-only: the transcript tests draw channel challenges to compare orderings.
-stwo = { workspace = true }
 
 [lints]
 workspace = true

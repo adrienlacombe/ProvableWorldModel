@@ -67,7 +67,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "nightly-2025-07-14"
+          toolchain: "stable"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 

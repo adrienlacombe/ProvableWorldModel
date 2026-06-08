@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "pwm-prover"
-description = "Prover CLI and orchestration: load manifest, run reference inference, build traces, drive the Stwo commit/challenge/proof flow, and emit the ProofArtifact bundle."
+description = "Prover CLI and orchestration: load manifest, run the integer reference inference, build the execution trace, Merkle-commit it, derive Fiat-Shamir challenges, and emit the AuditArtifact bundle (commit-and-audit; specs.md §6)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,13 +11,7 @@ authors.workspace = true
 
 [dependencies]
 pwm-core = { workspace = true }
-pwm-air = { workspace = true }
-pwm-circuits = { workspace = true }
 pwm-export = { workspace = true }
-# Vendored Stwo prover (RFC-0015), referenced by path only. The prover drives the
-# Stwo commit/challenge/proof flow, so it opts into the `prover` feature (which
-# enables std); the workspace default is no_std for the verifier path.
-stwo = { workspace = true, features = ["prover"] }
 
 [lints]
 workspace = true
