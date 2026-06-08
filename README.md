@@ -148,27 +148,59 @@ and exactly recomputes the attention, softmax, GELU, LayerNorm, and residuals.
 ## How it works
 
 ```text
-  le-wm checkpoint
-        |
-        v
-  [pwm-export]   quantize to an exact integer graph, fold BatchNorm,
-        |        emit a canonical manifest + committed lookup tables
-        v
-  quantized graph + committed inputs (latent history, goal, candidate actions)
-        |
-        v
-  [pwm-prover]   run the exact integer reference inference, record the trace,
-        |        Merkle-commit it, squeeze the Freivalds challenge via Fiat-Shamir
-        v
-  AuditArtifact  (commitments + trace + claimed outputs)
-        |
-        v
-  [pwm-verifier] CPU, no_std, float-free:
-        |          - Freivalds-check every fixed-weight matmul:  v·x == r·z
-        |          - exactly recompute requant, attention, tables, LayerNorm, cost, argmin
-        |          - check the rollout recurrence and the selection
-        v
-  accept  (Ok)   or   reject  (a specific, typed VerifyError)
++=== PROVER  (trusted / offline) ============================================+
+|                                                                            |
+|  +----------+  +----------+  +----------+  +------------------+            |
+|  |CHECKPOINT|  |  EXPORT  |  |  ENCODE  |  |      COMMIT      |            |
+|  | le-wm    |->| quantize |->| PushT    |->| canonicalize     |            |
+|  | JEPA     |  | to exact |  | frames ->|  | latent +         |            |
+|  | weights +|  | int graph|  | ViT enc +|  | action;          |            |
+|  | config   |  | fold     |  | projector|  | check the        |            |
+|  | (lewm-   |  | BatchNorm|  | -> latent|  | manifest         |            |
+|  | pusht)   |  | manifest |  | history; |  | hash vs          |            |
+|  |          |  | + LUTs   |  | act->emb |  | model            |            |
+|  +----------+  +----------+  +----------+  +---------+--------+            |
+|     src: quentinll/lewm-pusht   src: lerobot/pusht   |                     |
+|  +---------------------------------------------------+                     |
+|  | PROVE  (z_next = predictor(latent, action))       |                     |
+|  | exact integer inference, full predictor:          |                     |
+|  | 192-dim, hist 3, depth 6, 16 heads x 64,          |                     |
+|  | mlp 2048; 2,437 ops: AdaLN-zero, MHA,             |                     |
+|  | GELU FFN, gated residuals;                        |                     |
+|  | trace -> Merkle commit -> Fiat-Shamir r           |                     |
+|  +-------------------------+-------------------------+                     |
+|                            |                                               |
++============================+===============================================+
+                             v
+         +-------------------+------------------+
+         | ARTIFACT  (the TRUST BOUNDARY)       |
+         | AuditArtifact = commitments + trace  |  the ONLY thing that
+         | + claimed z_next                     |  crosses prover -> verifier
+         +-------------------+------------------+
+                             |
++============================+===============================================+
+|                            v        VERIFIER  (no_std / float-free)        |
+|  +------------------------------------------------------------+            |
+|  | VERIFY  (NEVER re-runs the model; audits arithmetic only)  |            |
+|  | replay transcript; Freivalds-check every fixed matmul:     |            |
+|  | v.x == r.z  because  rT(W x) = (rT W) x                    |            |
+|  | soundness err <= 1/p, p = 2^61-1;                          |            |
+|  | union over ~1e5 checks stays ~ 2^-44                       |            |
+|  | recompute attn, softmax, GELU, LayerNorm, residuals;       |            |
+|  | check rollout, cost, argmin                                |            |
+|  +--------------+------------------------------+--------------+            |
+|                 | all checks pass              | any value mutated         |
+|                 v                              v                           |
+|   +-------------------------+     +-----------------------------------+    |
+|   | VERDICT: ACCEPT (Ok)    |     | VERDICT: REJECT (VerifyError)     |    |
+|   | every check passed      |     | forge one matmul output ->        |    |
+|   |                         |     | FreivaldsCheckFailed              |    |
+|   +-------------------------+     +-----------------------------------+    |
+|                                                                            |
++============================================================================+
+
+exact integer fixed point makes attention reproducible: the one hole
+CommitLLM leaves open is closed here. The verifier audits arithmetic only.
 ```
 
 The prover runs the model normally and commits to its execution trace. The
