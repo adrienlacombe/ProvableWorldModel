@@ -65,6 +65,35 @@ cargo test --workspace                                  # the accept and reject 
 
 See [demo/README.md](demo/README.md) for what each step shows.
 
+### Prove the real pretrained checkpoint
+
+The exporter ingests the real [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
+checkpoint, quantizes the full 192-dim V0 subgraph (the action encoder, the six
+predictor blocks, and `pred_proj`), folds the BatchNorm, and commits the manifest.
+The Rust prover then proves the real `pred_proj` head on a latent with the real
+folded weights:
+
+```bash
+pip install torch numpy
+# download weights.pt + config.json from the model page above, then
+LEWM_WEIGHTS=weights.pt python crates/pwm-export/python/scripts/export_lewm_v0.py /tmp/lewm.json
+cargo run -p pwm-testkit --bin pwm --release -- prove-lewm /tmp/lewm.json
+```
+
+```
+[prover] model   lewm-pusht pred_proj head (Linear -> GELU -> Linear), real BN-folded weights
+[prover] config  dim=192, mlp=2048  (real BN-folded pred_proj weights from quentinll/lewm-pusht)
+[prover] infer   exact integer forward pass in 25.875 ms
+[prover]   input  z[..6] [4, -4, 20, 3, -17, 12]   output z_proj[..6] [-11, 9, 17, 5, 11, 49]
+[verifier] ACCEPT  in 25.147 ms
+[verifier] tamper  forged matmul op Some(100) -> REJECT FreivaldsCheckFailed { op_id: 100 }
+```
+
+The full 6-block, 16-head attention predictor is quantized and committed by the
+same export. Proving it end to end in the Rust prover is the next step: the op
+kernels exist (`prove_block`), it needs the 16-head graph wired and its activation
+scales calibrated, exactly as done here for the `pred_proj` head.
+
 ## How it works
 
 ```text
@@ -120,16 +149,17 @@ order, planner config, public inputs, claimed outputs, and every trace cell.
 | P3 | Full CEM planner (sampling, elites, distribution updates). | deferred |
 | P4 | Pixel to plan, including the ViT encoder. | deferred |
 
-What is implemented and tested today (164 tests): the commit-and-audit protocol
+What is implemented and tested today (166 tests): the commit-and-audit protocol
 (Freivalds, exact replay, Merkle commitments, Fiat-Shamir), the full predictor op
 vocabulary (attention, AdaLN, GELU and SiLU tables, LayerNorm, residuals,
 softmax), the rollout recurrence, the MSE cost, and the argmin with tie-break,
 each with accept and reject tests. The demo proves a real le-wm predictor block
-(a compact instance). Wiring the full 192-dim le-wm V0, a real checkpoint through
-the exporter into the prover, is the remaining integration step; the export side
-(quantize, BatchNorm fold, manifest) runs against the real le-wm today (the `real`
-profile). For P2, all `S` candidate costs must be proven, not only the winner:
-proving only the selected candidate would be unsound.
+(a compact instance). The exporter ingests the real `quentinll/lewm-pusht`
+checkpoint and quantizes the full 192-dim V0 subgraph, and the Rust prover proves
+its `pred_proj` head with the real folded weights (`pwm prove-lewm`). Wiring the
+full 6-block, 16-head attention predictor into the prover is the remaining step.
+For P2, all `S` candidate costs must be proven, not only the winner: proving only
+the selected candidate would be unsound.
 
 ## Architecture
 

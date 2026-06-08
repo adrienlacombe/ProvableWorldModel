@@ -12,6 +12,7 @@
 //! pwm verify <file>     # decode a proof and verify it (accept or reject)
 //! pwm audit  <file>     # the verifier's story: challenge + accept, then tamper -> reject
 //! pwm tamper <in> <out> # forge one matmul output (the canonical Freivalds-caught lie)
+//! pwm prove-lewm <json> # prove the REAL le-wm pred_proj head from an export bundle
 //! ```
 //!
 //! Add `--json` for machine-readable output. The docker demo runs a prover service
@@ -22,9 +23,12 @@ use std::fs;
 use std::process::exit;
 use std::time::Instant;
 
+use pwm_core::serialize::canonical_bytes;
 use pwm_testkit::predictor::{
     self, PredictorProof, ACTION_DIM, DIM, MLP, SEQ, V0_DEPTH, V0_DIM, V0_HEADS,
 };
+use pwm_testkit::{demo, lewm};
+use pwm_verifier::verify as verify_artifact;
 use serde_json::json;
 
 // --- ANSI helpers (respect NO_COLOR) ---
@@ -339,8 +343,97 @@ fn main() {
                 );
             }
         }
+        "prove-lewm" => {
+            let Some(path) = pos.get(1) else {
+                eprintln!("usage: pwm prove-lewm <bundle.json>");
+                exit(2);
+            };
+            let bundle_json = fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("read {path} failed: {e}");
+                exit(1);
+            });
+            let bundle = lewm::load_bundle(&bundle_json);
+            let t0 = Instant::now();
+            let artifact = lewm::prove(&bundle);
+            let infer = t0.elapsed();
+            let bytes = canonical_bytes(&artifact).len();
+            let out: Vec<i64> = artifact
+                .claimed_output
+                .data()
+                .iter()
+                .map(|c| c.value())
+                .collect();
+            let tv = Instant::now();
+            let accepted = verify_artifact(&artifact).is_ok();
+            let vtime = tv.elapsed();
+            let mut forged = lewm::prove(&bundle);
+            let forged_op = demo::tamper_accumulator(&mut forged);
+            let reject = verify_artifact(&forged).err().map(|e| format!("{e:?}"));
+            if json {
+                println!(
+                    "{}",
+                    json!({"model": bundle.label, "dim": bundle.dim, "mlp": bundle.mlp,
+                        "proof_bytes": bytes, "accepted": accepted, "output_head": &out[..out.len().min(6)],
+                        "tamper": {"forged_op": forged_op, "rejected_with": reject}})
+                );
+                return;
+            }
+            println!(
+                "{}",
+                paint(
+                    "36;1",
+                    "ProvableWorldModel: real le-wm checkpoint into the prover\n"
+                )
+            );
+            println!(
+                "{} {}  {}",
+                tag("prover"),
+                paint("1", "model "),
+                bundle.label
+            );
+            println!(
+                "{} config  dim={}, mlp={}  {}",
+                tag("prover"),
+                bundle.dim,
+                bundle.mlp,
+                dim("(real BN-folded pred_proj weights from quentinll/lewm-pusht)")
+            );
+            println!(
+                "{} infer   exact integer forward pass in {}",
+                tag("prover"),
+                ok(&ms(infer))
+            );
+            println!(
+                "{}   input  z[..6] {:?}   output z_proj[..6] {:?}",
+                tag("prover"),
+                &bundle.input[..bundle.input.len().min(6)],
+                &out[..out.len().min(6)]
+            );
+            println!("{} proof   {} bytes", tag("prover"), bytes);
+            if accepted {
+                println!("{} {}  in {}", tag("verifier"), ok("ACCEPT"), ms(vtime));
+            } else {
+                println!("{} {}", tag("verifier"), bad("REJECT"));
+                exit(1);
+            }
+            match reject {
+                Some(e) => println!(
+                    "{} tamper  forged matmul op {forged_op:?} -> {} {e}",
+                    tag("verifier"),
+                    bad("REJECT")
+                ),
+                None => {
+                    eprintln!("tamper undetected (bug)");
+                    exit(1);
+                }
+            }
+            println!(
+                "\n{}",
+                ok("real le-wm pred_proj head proven and verified; a forged matmul is caught.")
+            );
+        }
         other => {
-            eprintln!("unknown command {other:?}; usage: pwm [demo|prove <f>|verify <f>|audit <f>|tamper <in> <out>] [--json]");
+            eprintln!("unknown command {other:?}; usage: pwm [demo|prove <f>|verify <f>|audit <f>|tamper <in> <out>|prove-lewm <bundle>] [--json]");
             exit(2);
         }
     }
