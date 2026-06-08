@@ -73,20 +73,22 @@ See [demo/README.md](demo/README.md) for all three demo modes and the real-check
 ### Prove the real pretrained checkpoint
 
 The exporter ingests the real [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
-checkpoint, encodes real PushT observation frames through the checkpoint's own ViT
-encoder + projector into a real latent history, quantizes the full 192-dim V0
+checkpoint, takes a real PushT expert episode from
+[`lerobot/pusht`](https://huggingface.co/datasets/lerobot/pusht), encodes the real
+observation frames through the checkpoint's own ViT encoder + projector and the
+real expert action through the action encoder, quantizes the full 192-dim V0
 subgraph, folds the BatchNorm, and commits the manifest.
 
 ```bash
-pip install torch numpy pillow
-# download weights.pt from the model page and a PushT GIF, then
-LEWM_WEIGHTS=weights.pt LEWM_GIF=path/to/lewm.gif \
+pip install torch numpy pillow pyarrow imageio imageio-ffmpeg
+# download weights.pt from the model page, then
+LEWM_WEIGHTS=weights.pt LEWM_LEROBOT=1 \
   python crates/pwm-export/python/scripts/export_lewm_v0.py \
   /tmp/lewm_pred_proj.json /tmp/lewm_predictor.json
 ```
 
 The full **6-block, 16-head attention predictor** then proves and verifies in the
-Rust prover on the real weights and the real observation latents:
+Rust prover on the real weights and the real observation and action:
 
 ```bash
 cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predictor.json
@@ -96,17 +98,20 @@ cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predic
 [prover] model   le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
 [prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
 [prover] inputs  z_history [3x192], action embedding [3x192]
-[prover]   source  real PushT observation: 3 frames from lewm.gif -> ViT encoder -> projector (action is a stand-in)
+[prover]   source  real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
 [prover] graph   2437 ops over the named-buffer block DAG
-[prover] infer   exact integer forward pass in 37 ms
-[prover]   z_next[..6] [-19, 41, -30, 1, 2, 12]  (predicted next-latent head)
-[verifier] ACCEPT  in 25 ms
+[prover] infer   exact integer forward pass in 34 ms
+[prover]   z_next[..6] [11, 55, 32, -73, -57, 13]  (predicted next-latent head)
+[verifier] ACCEPT  in 24 ms
 [verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
 ```
 
-A real observation goes through the checkpoint's own encoder to produce the latent
-history; the encode is the trusted offline step (the image encoder is P4-deferred
-for proving), and the predictor step is what the no_std verifier audits.
+A real expert episode (consistent observation and action) goes through the
+checkpoint's own encoders to produce the latent history and action embedding the
+predictor consumes. The encode is the trusted offline step (the image encoder is
+P4-deferred for proving), and the predictor step is what the no_std verifier
+audits. The action is the real 2D expert control plus the agent state; the full
+le-wm 10-dim action layout lives in the 13 GB lewm-pusht dataset.
 
 The predictor is built as the real le-wm architecture over the named-buffer block
 DAG: per ConditionalBlock, AdaLN-zero conditioning (`SiLU(c) -> Linear -> chunk6`)

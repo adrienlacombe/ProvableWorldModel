@@ -36,32 +36,38 @@ docker compose --profile real up --build export predictor-real
 ```
 
 This downloads the real [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
-checkpoint and a PushT observation GIF, **encodes real observation frames through
-the checkpoint's own ViT encoder + projector into a real latent history**, quantizes
-the full 192-dim V0 subgraph, and proves the predictor with the **real quantized
-weights on the real latents**. Heavy: it pulls a PyTorch image and downloads a
-~70 MB checkpoint the first time.
+checkpoint, takes a **real PushT expert episode from
+[`lerobot/pusht`](https://huggingface.co/datasets/lerobot/pusht)** (a consistent
+real observation and action), **encodes the real observation frames through the
+checkpoint's own ViT encoder + projector** and the **real expert action through
+the action encoder**, quantizes the full 192-dim V0 subgraph, and proves the
+predictor on the real weights and the real inputs. Heavy: it pulls a PyTorch image
+and downloads a ~70 MB checkpoint the first time.
 
 ```
 [export] checkpoint  quentinll/lewm-pusht (Hugging Face, MIT)
-[export] config      latent_dim=192, history=3, depth=6, heads=16, dim_head=64, mlp_dim=2048
 [export] quantize    34 linears -> 11,705,856 int8 params (power-of-two scales)
-[encode] real PushT observation: 3 frames from lewm.gif (1029 total) -> ViT encoder -> projector
+[encode] real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
 [prover] model   le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
 [prover] inputs  z_history [3x192], action embedding [3x192]
-[prover]   source  real PushT observation: 3 frames from lewm.gif -> ViT encoder -> projector (action is a stand-in)
-[prover] infer   exact integer forward pass in 37 ms
-[prover]   z_next[..6] [-19, 41, -30, 1, 2, 12]  (predicted next-latent head)
-[verifier] ACCEPT  in 25 ms
+[prover]   source  real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
+[prover] infer   exact integer forward pass in 34 ms
+[prover]   z_next[..6] [11, 55, 32, -73, -57, 13]  (predicted next-latent head)
+[verifier] ACCEPT  in 24 ms
 [verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
 ```
 
-This is the most end-to-end path: a **real PushT observation** is encoded through
-the checkpoint's own ViT encoder + projector into a real latent history, which the
-real predictor then consumes. The export (download, encode, quantize, commit) is
-the trusted offline step; the prover runs the exact integer inference and the
-no_std verifier audits it. The action is a stand-in (the GIF has no action labels),
-and the full image-encoder pass is the float reference (P4-deferred for proving).
+This is fully end to end: a **real PushT expert episode** (consistent observation
+and action from one rollout) is encoded through the checkpoint's own encoders into
+the latent history and action embedding the predictor consumes. The export
+(download, encode, quantize, commit) is the trusted offline step; the prover runs
+the exact integer inference and the no_std verifier audits it. The action is the
+real 2D expert control plus the agent state, normalized to `[-1, 1]`; the remaining
+proprio dims (block pose) and the exact le-wm 10-dim layout live in the 13 GB
+lewm-pusht dataset, which is impractical to ship in a demo. The full image encoder
+is the float reference (P4-deferred for proving). Set `LEWM_GIF=<path>` instead of
+the lerobot episode to encode frames from the le-wm rollout GIF with a stand-in
+action.
 
 ## 3. The tiny two-party handoff (teaching)
 
@@ -81,18 +87,20 @@ cargo run -p pwm-testkit --bin pwm --release -- prove-predictor <bundle>  # real
 cargo run -p pwm-testkit --bin pwm --release                      # the tiny compact story
 ```
 
-To produce the real-checkpoint bundle locally (with real observation latents):
+To produce the real-checkpoint bundle locally (with real observation + action):
 
 ```bash
-pip install torch numpy pillow
-# download weights.pt from the model page and a PushT GIF, then
-LEWM_WEIGHTS=weights.pt LEWM_GIF=path/to/lewm.gif \
+pip install torch numpy pillow pyarrow imageio imageio-ffmpeg
+# download weights.pt from the model page, then
+LEWM_WEIGHTS=weights.pt LEWM_LEROBOT=1 \
   python crates/pwm-export/python/scripts/export_lewm_v0.py \
   /tmp/lewm_pred_proj.json /tmp/lewm_predictor.json
 cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predictor.json
 ```
 
-Omit `LEWM_GIF` to use synthetic input latents instead of encoding real frames.
+`LEWM_LEROBOT=1` pulls a real lerobot/pusht episode (observation + action). Use
+`LEWM_GIF=<path>` instead for le-wm rollout frames with a stand-in action, or omit
+both for synthetic inputs.
 
 ## What is proven
 

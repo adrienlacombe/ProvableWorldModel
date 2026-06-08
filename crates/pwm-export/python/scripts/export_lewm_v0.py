@@ -177,10 +177,25 @@ def main() -> None:
             "fc2": q8(sd[f"{p}.mlp.net.4.weight"]),
             "adaln": q8(sd[f"{p}.adaLN_modulation.1.weight"]),
         })
-    # Inputs: real observation latents if LEWM_GIF is set (encode real PushT frames
-    # through the checkpoint's ViT encoder + projector), else synthetic latents.
+    # Inputs, in order of preference:
+    #   LEWM_LEROBOT=1  consistent real (observation, action) from a lerobot/pusht
+    #                   expert episode: real frames -> encoder, real 2D action+state.
+    #   LEWM_GIF=<path> real observation frames (encoder) + a stand-in action.
+    #   otherwise       synthetic latents.
     gif = os.environ.get("LEWM_GIF")
-    if gif and Path(gif).exists():
+    if os.environ.get("LEWM_LEROBOT"):
+        from pwm_export import encode, lerobot_pusht
+        tsd = torch.load(os.environ.get("LEWM_WEIGHTS", "weights.pt"),
+                         map_location="cpu", weights_only=True)
+        frames, a10, n = lerobot_pusht.load_episode(history=HIST, frameskip=5)
+        emb = encode.encode_observation(tsd, frames)
+        act_emb = encode.encode_action(tsd, torch.tensor(a10)).numpy()
+        x_q = quantize.quantize_array(emb.flatten())[0]
+        c_q = quantize.quantize_array(act_emb.flatten())[0]
+        input_source = (f"real PushT expert episode (lerobot/pusht): {n} frames @ frameskip 5 "
+                        f"-> ViT encoder; real 2D action + agent state")
+        print(f"[encode] {input_source}")
+    elif gif and Path(gif).exists():
         from pwm_export import encode
         tsd = torch.load(os.environ.get("LEWM_WEIGHTS", "weights.pt"),
                          map_location="cpu", weights_only=True)
@@ -193,7 +208,7 @@ def main() -> None:
     else:
         x_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
         c_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
-        input_source = "synthetic quantized latents (set LEWM_GIF to encode a real observation)"
+        input_source = "synthetic quantized latents (set LEWM_LEROBOT=1 for real obs+action)"
     pred_bundle = {
         "model": "lewm-pusht full predictor (6 blocks, 16 heads), real quantized weights",
         "input_source": input_source,
