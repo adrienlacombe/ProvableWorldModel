@@ -1,88 +1,97 @@
-# The demo: the whole scheme as a challenge game
+# The demo: the le-wm world model, proven
 
-This plays ProvableWorldModel end to end on your machine. A prover runs a real
-world-model predictor step in exact integer arithmetic, commits to its execution
-trace, and hands a verifier a proof. The verifier replays the Fiat-Shamir
-challenge, Freivalds-checks every matmul, exactly recomputes the attention,
-softmax, GELU, and residuals, and accepts. Then someone forges a single matmul
-output, and the verifier rejects it. No GPU, no floating point, no network.
+This plays ProvableWorldModel end to end on your machine. The prover runs the
+le-wm predictor in exact integer arithmetic, commits to its execution trace, and
+the no_std verifier replays the Fiat-Shamir challenge, Freivalds-checks every
+matmul, exactly recomputes the attention, softmax, GELU, LayerNorm, and residuals,
+and accepts. Then a single matmul output is forged and the verifier rejects it.
+No GPU, no floating point.
 
-The model is the le-wm predictor architecture: an action embedding conditions a
-self-attention block and a GELU feed-forward, each with a residual, over a latent
-history, predicting the next latent. It runs as a compact instance (`dim = 2`,
-`history = 2`, one head, `mlp = 4`). The full le-wm V0 predictor runs at
-`latent_dim = 192`, depth 6, 16 heads, which the exporter ingests and quantizes
-(see the optional `real` profile below). The weights are a fixed synthesized
-instance, since le-wm V0 is `pretrained: false` and the proof attests the exact
-quantized relation regardless of the weights.
-
-## Run it
+## 1. The real architecture (default, fast)
 
 ```bash
 docker compose up --build
 ```
 
-or:
+Runs the **real le-wm predictor architecture** at the real V0 dims (`latent_dim
+192`, `history 3`, `depth 6`, `16 heads`, `dim_head 64`, `mlp 2048`): AdaLN-zero
+conditioning, 16-head self-attention, GELU feed-forward, residuals, ~2437 ops.
+Pure Rust, offline, weights are synthetic.
+
+```
+[prover] model   le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)
+[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
+[prover] weights 30 tensors, 10764288 int8 params
+[prover] graph   2437 ops over the named-buffer block DAG
+[prover] infer   exact integer forward pass in 36 ms
+[verifier] ACCEPT  in 26 ms
+[verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
+```
+
+## 2. The real pretrained checkpoint (real weights)
 
 ```bash
-./demo/run.sh
+docker compose --profile real up --build export predictor-real
+# or: ./demo/run-real.sh
 ```
 
-You will see two parties:
+This downloads the real [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
+checkpoint, quantizes the full 192-dim V0 subgraph, and proves the predictor with
+the **real quantized weights**. Heavy: it pulls a PyTorch image and downloads a
+~70 MB checkpoint the first time.
 
 ```
-prover-1    | [prover] model   le-wm action-conditioned predictor block (self-attention + GELU FFN + residuals)
-prover-1    | [prover] config  dim=2, history=2, heads=1, action_dim=2, mlp=4
-prover-1    | [prover] infer   exact integer forward pass in 0.027 ms
-prover-1    | [prover]   z_history [1, 0, 0, 1]  action [1, 0]
-prover-1    | [prover]   z_next    [3905, 1802]  (predicted next latent)
-prover-1    | [prover] trace   15 ops, block_root 99ba60b3...
-prover-1    | [prover] wrote   proof (652 bytes) to /shared/artifact.bin
-verifier-1  | [verifier] challenge  replayed the Fiat-Shamir transcript, derived Freivalds r for 7 linear ops
-verifier-1  | [verifier] ACCEPT     in 0.048 ms   z_next [3905, 1802]
-verifier-1  | [verifier] tamper     forged the output of matmul op 4 (a fake projection result)
-verifier-1  | [verifier] REJECT     FreivaldsCheckFailed { op_id: 4 }
+[export] checkpoint  quentinll/lewm-pusht (Hugging Face, MIT)
+[export] config      latent_dim=192, history=3, depth=6, heads=16, dim_head=64, mlp_dim=2048
+[export] quantize    34 linears -> 11,705,856 int8 params (power-of-two scales)
+[export] commitments (Blake2s-256): model / quantization / graph / weights_root
+[prover] model   le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
+[prover] source  quentinll/lewm-pusht (Hugging Face, MIT), int8-quantized V0 subgraph
+[prover] inputs  z_history [3x192], action embedding [3x192]  (committed quantized latents)
+[prover] infer   exact integer forward pass in 28 ms
+[prover]   z_next[..6] [37, 0, -7, 55, -39, -17]  (predicted next-latent head)
+[verifier] ACCEPT  in 25 ms
+[verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
 ```
 
-The `prover` service runs `pwm prove`: it runs the predictor, logs the inference,
-and writes the proof (the input values plus the claimed output of every op) to a
-shared volume. The `verifier` service runs `pwm audit`: it loads the proof,
-reconstructs the public predictor graph, replays the Fiat-Shamir transcript to
-derive the Freivalds challenge, accepts the honest proof, then forges one matmul
-output and shows the typed rejection.
+The export is the trusted offline step (it ingests the checkpoint, quantizes, and
+commits). The prover then runs the exact integer inference and the no_std verifier
+audits it. The input latents are committed stand-ins; real latents would come from
+the image encoder on an observation (the encoder is P4-deferred).
 
-## What each step means
+## 3. The tiny two-party handoff (teaching)
 
-| Step | What happens | Why it is sound |
-|---|---|---|
-| infer | The prover runs the exact integer predictor forward pass, recording every matmul accumulator and op into a trace, and Merkle-commits it. | The committed trace is fixed before any challenge exists. |
-| challenge | The verifier replays the Fiat-Shamir transcript to derive `r`, forms `v = rᵀW` from the committed weights, and checks `v·x == r·z` for each linear. | A wrong accumulator `z != Wx` passes with probability at most `1/p` (`p = 2⁶¹−1`). |
-| accept | Every Freivalds check passes and the attention, softmax, GELU, and residuals recompute exactly. | Nothing the relation depends on is left unchecked. |
-| tamper | One matmul output is bumped by 1, a forged projection result. | `z` no longer equals `Wx`. |
-| reject | `v·x != r·z`, so the verifier returns `FreivaldsCheckFailed`. | The forgery is caught with overwhelming probability. |
+```bash
+docker compose --profile compact up --build prover verifier
+```
+
+A small built-in model where a `prover` container writes a proof to a shared
+volume and a `verifier` container accepts it, then forges a matmul and rejects it.
+Good for seeing the prover/verifier split; not the real model.
 
 ## Run it without Docker
 
 ```bash
-cargo run -p pwm-testkit --bin pwm --release            # the full story
-cargo run -p pwm-testkit --bin pwm --release -- audit <proof>   # verifier side
-cargo run -p pwm-testkit --bin pwm --release -- --json         # machine-readable
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor   # real architecture, synthetic
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor <bundle>  # real checkpoint weights
+cargo run -p pwm-testkit --bin pwm --release                      # the tiny compact story
 ```
 
-`pwm demo` plays infer, challenge, accept, tamper, and reject in one process.
-
-## Optional: export a real le-wm model (heavy)
-
-The default demo proves the predictor architecture so the image stays tiny and
-runs offline. To run the real le-wm export pipeline (PyTorch, multi-GB image), use
-the opt-in profile:
+To produce the real-checkpoint bundle locally:
 
 ```bash
-docker compose --profile real up --build real-export
+pip install torch numpy
+# download weights.pt from the model page, then
+LEWM_WEIGHTS=weights.pt python crates/pwm-export/python/scripts/export_lewm_v0.py \
+  /tmp/lewm_pred_proj.json /tmp/lewm_predictor.json
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predictor.json
 ```
 
-This builds the real le-wm V0 subgraph (`ARPredictor`/`Embedder`/`MLP`), loads it
-through `torch.load`, quantizes every linear, folds the BatchNorm, and emits the
-committed manifest. It is the export side (quantize, fold, commit), not the Rust
-prover. It needs no pretrained checkpoint: le-wm V0 is `pretrained: false`, so a
-fresh instance is faithful to the V0 config.
+## What is proven
+
+The proof attests the exact integer (quantized) relation of the committed model:
+every fixed-weight matmul is Freivalds-checked (`v.x == r.z`, error `<= 1/p` with
+`p = 2^61-1`), and the attention dot products, softmax, GELU, SiLU, LayerNorm, and
+residuals are recomputed exactly. It does not claim float/PyTorch equivalence. The
+quantization here keeps activations int8 throughout; per-tensor activation-scale
+calibration for float-faithful outputs is a further refinement.

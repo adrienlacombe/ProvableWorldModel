@@ -6,12 +6,12 @@ heavy, optional deps, so they live here as scripts rather than CI tests; the
 torch-free cores they call are unit-tested in `../tests/`.
 
 le-wm V0 uses `pretrained: false` (encoder trained from scratch), so a random
-init is faithful to the V0 config — no pretrained checkpoint is needed to
+init is faithful to the V0 config, and no pretrained checkpoint is needed to
 exercise the export or the proof relations, which attest the *quantized* model
 regardless of weight values. Point `export_lewm.py` at a real trained checkpoint
 with `LEWM_CKPT=...`.
 
-## `export_lewm.py` — E-201/202/203/205 (real le-wm export)
+## `export_lewm.py`: E-201/202/203/205 (real le-wm export)
 
 ```bash
 pip install torch einops numpy
@@ -29,11 +29,11 @@ Linear (exact, ≈2e-15), and emits the committed manifest. Verified output:
 E-201: V0 dims (192, 3, 6, 16, 64, 2048) validated; 34 linears extracted
 E-202: quantized 34 weights (int8 + MAC < int32)
 E-203: fold == Linear∘BN(eval), max err = 2.00e-15
-E-205: manifest commitments — model/quantization/graph/weights_root
+E-205: manifest commitments: model/quantization/graph/weights_root
 ✅ real le-wm V0 export ran end-to-end.
 ```
 
-## `encode_vit.py` — D-804/E-208 (real ViT encode + P2 bundle)
+## `encode_vit.py`: D-804/E-208 (real ViT encode + P2 bundle)
 
 ```bash
 pip install torch transformers numpy

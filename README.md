@@ -30,9 +30,8 @@ claims must be a subset of the proven statement.
 
 ## Quickstart
 
-Run the whole scheme as a two-party game. A prover runs a real world-model
-predictor step in exact integer arithmetic and writes a proof; a verifier accepts
-it, then a forged matmul gets rejected.
+Prove the real le-wm predictor architecture (192-dim, 16 heads, 6 blocks) in exact
+integer arithmetic, then watch a forged matmul get rejected.
 
 ```bash
 git clone https://github.com/AbdelStark/ProvableWorldModel
@@ -41,29 +40,35 @@ docker compose up --build
 ```
 
 ```
-prover-1    | [prover] model   le-wm action-conditioned predictor block (self-attention + GELU FFN + residuals)
-prover-1    | [prover] infer   exact integer forward pass in 0.027 ms
-prover-1    | [prover]   z_history [1, 0, 0, 1]  action [1, 0]
-prover-1    | [prover]   z_next    [3905, 1802]  (predicted next latent)
-prover-1    | [prover] trace   15 ops, block_root 99ba60b3...
-verifier-1  | [verifier] challenge  replayed the Fiat-Shamir transcript, derived Freivalds r for 7 linear ops
-verifier-1  | [verifier] ACCEPT     in 0.048 ms   z_next [3905, 1802]
-verifier-1  | [verifier] tamper     forged the output of matmul op 4 (a fake projection result)
-verifier-1  | [verifier] REJECT     FreivaldsCheckFailed { op_id: 4 }
+[prover] model   le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)
+[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
+[prover] weights 30 tensors, 10764288 int8 params
+[prover] graph   2437 ops over the named-buffer block DAG
+[prover] infer   exact integer forward pass in 36 ms
+[prover]   z_next[..6] [-2, -1, 0, 1, 2, -2]  (predicted next-latent head)
+[verifier] challenge  replayed the Fiat-Shamir transcript, derived the Freivalds r
+[verifier] checks     Freivalds v·x == r·z on every projection; exact recompute of attention, softmax, GELU, LayerNorm, residuals
+[verifier] ACCEPT  in 26 ms
+[verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
 ```
 
-The demo proves the le-wm predictor architecture (attention, action conditioning,
-GELU feed-forward, residuals) as a compact instance. See [demo/README.md](demo/README.md).
+That default is the real architecture with synthetic weights (fast, no checkpoint).
+For the **real pretrained checkpoint** end to end (download, quantize, prove the
+real weights):
+
+```bash
+docker compose --profile real up --build export predictor-real   # or ./demo/run-real.sh
+```
 
 Without Docker:
 
 ```bash
-cargo run -p pwm-testkit --bin pwm --release          # the full story in one process
-cargo run -p pwm-testkit --bin pwm --release -- --json  # machine-readable
-cargo test --workspace                                  # the accept and reject suites
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor   # real architecture, synthetic
+cargo run -p pwm-testkit --bin pwm --release                      # the tiny compact story
+cargo test --workspace                                            # the accept and reject suites
 ```
 
-See [demo/README.md](demo/README.md) for what each step shows.
+See [demo/README.md](demo/README.md) for all three demo modes and the real-checkpoint steps.
 
 ### Prove the real pretrained checkpoint
 

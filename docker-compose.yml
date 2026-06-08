@@ -1,21 +1,60 @@
-# The whole commit-and-audit scheme as a two-party game.
+# The commit-and-audit scheme on the le-wm world model.
 #
-#   docker compose up
+#   docker compose up --build
+#       The real le-wm predictor architecture (192-dim, 16 heads, 6 blocks) at the
+#       real V0 dims, run in exact integer arithmetic, proven and verified. Pure
+#       Rust, fast, offline. Weights are synthetic (no checkpoint needed).
 #
-# The prover runs real integer inference, assembles the AuditArtifact, and writes
-# it to a shared volume. The verifier then runs the verifier-secret Freivalds
-# challenge (accept), then attempts to forge a matmul output and gets rejected.
-# Pure Rust, offline, no GPU. See demo/README.md.
+#   docker compose --profile real up --build export predictor-real
+#       The REAL pretrained quentinll/lewm-pusht checkpoint, end to end: download,
+#       quantize the full V0, then prove + verify the real-weight predictor.
+#       Heavy (PyTorch image + ~70 MB checkpoint download).
+#
+#   docker compose --profile compact up --build prover verifier
+#       The tiny two-party teaching handoff (a prover writes a proof, a verifier
+#       accepts it, then a forged matmul is rejected).
+#
+# See demo/README.md.
 
 services:
+  # Default: the real predictor architecture at real dims, synthetic weights.
+  predictor:
+    build: .
+    image: pwm-demo:local
+    command: ["prove-predictor"]
+    tty: true
+
+  # `real` profile: download + quantize the real checkpoint, then prove it.
+  export:
+    profiles: ["real"]
+    build:
+      context: crates/pwm-export/python
+    image: pwm-lewm-export:local
+    volumes:
+      - lewm:/shared
+  predictor-real:
+    profiles: ["real"]
+    build: .
+    image: pwm-demo:local
+    command: ["prove-predictor", "/shared/lewm_predictor.json"]
+    depends_on:
+      export:
+        condition: service_completed_successfully
+    volumes:
+      - lewm:/shared
+    tty: true
+    stop_grace_period: 60s
+
+  # `compact` profile: the tiny two-party prove -> verify -> tamper handoff.
   prover:
+    profiles: ["compact"]
     build: .
     image: pwm-demo:local
     command: ["prove", "/shared/artifact.bin"]
     volumes:
       - artifact:/shared
-
   verifier:
+    profiles: ["compact"]
     image: pwm-demo:local
     command: ["audit", "/shared/artifact.bin"]
     depends_on:
@@ -24,17 +63,8 @@ services:
     volumes:
       - artifact:/shared
     tty: true
-    # The prover exits first; with --exit-code-from this can trigger an abort
-    # before the verifier finishes. Give it room to print the full challenge game.
     stop_grace_period: 30s
-
-  # Optional heavy profile: the real le-wm export (PyTorch, multi-GB image).
-  #   docker compose --profile real up --build real-export
-  real-export:
-    profiles: ["real"]
-    build:
-      context: crates/pwm-export/python
-    image: pwm-lewm-export:local
 
 volumes:
   artifact:
+  lewm:

@@ -120,9 +120,11 @@ def main() -> None:
     tables = [gelu_int8_table()]
     manifest = export.build_manifest(ops, weights, tables, scales)
     total = sum(len(t["data"]) for t in weights)
-    print(f"real lewm-pusht V0: {len(linears)} linears, {total:,} int8 params, "
-          f"dims dim={DIM}/heads={HEADS}/dim_head={DIM_HEAD}/mlp={MLP}/depth={DEPTH}/history={HIST}")
-    print("manifest commitments:")
+    print("[export] checkpoint  quentinll/lewm-pusht (Hugging Face, MIT)")
+    print(f"[export] config      latent_dim={DIM}, history={HIST}, depth={DEPTH}, heads={HEADS}, "
+          f"dim_head={DIM_HEAD}, mlp_dim={MLP}")
+    print(f"[export] quantize    {len(linears)} linears -> {total:,} int8 params (power-of-two scales)")
+    print("[export] commitments (Blake2s-256):")
     for k, v in manifest.items():
         print(f"  {k:24} = {v[:24]}...")
 
