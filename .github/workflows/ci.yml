@@ -133,8 +133,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Builds the argmin uniqueness proof + the Freivalds probability bound.
-      # lean-action installs elan from lean/lean-toolchain and fetches the prebuilt
-      # Mathlib cache (`lake exe cache get`) before `lake build` — no Mathlib rebuild.
-      - uses: leanprover/lean-action@v1
-        with:
-          lake-package-directory: "lean"
+      # Install elan/toolchain manually with retries: GitHub release downloads
+      # intermittently 504, and `lean-action`'s installer has no retry, so a
+      # transient blip fails the whole job. Mathlib oleans come from the (reliable)
+      # `lake exe cache get` Azure cache — no Mathlib rebuild.
+      - name: Install elan + Lean toolchain (retry transient GitHub 504s)
+        working-directory: lean
+        run: |
+          set -euo pipefail
+          url=https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz
+          for i in $(seq 1 8); do
+            curl -fL --retry 5 --retry-all-errors --retry-delay 10 "$url" -o elan.tar.gz && break
+            echo "elan download attempt $i failed (transient 504?); retrying in 20s"; sleep 20
+          done
+          tar xzf elan.tar.gz
+          ./elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.elan/bin:$PATH"
+          for i in $(seq 1 6); do
+            elan toolchain install "$(cat lean-toolchain)" && break
+            echo "toolchain install attempt $i failed; retrying in 20s"; sleep 20
+          done
+      - name: Build Lean proofs (argmin + Freivalds bound)
+        working-directory: lean
+        run: |
+          set -euo pipefail
+          lake exe cache get
+          lake build
