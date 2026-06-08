@@ -44,7 +44,9 @@
           committed quantized JEPA world model was run exactly as specified: rolling out
           candidate action plans, scoring them against a goal, and picking the best. It
           Freivalds-checks the large matmuls and exactly re-executes everything else, all
-          bound by Merkle commitments and a Fiat-Shamir transcript.
+          bound by Merkle commitments and a Fiat-Shamir transcript. The full 192-dim,
+          6-block, 16-head le-wm predictor proves and verifies with the real pretrained
+          checkpoint weights.
         </p>
         <div class="hero-cta">
           <a class="btn btn-primary" href="#how">See how it works</a>
@@ -106,14 +108,44 @@
       </div>
 
       <ol class="flow" id="flow">
-        <li class="flow-step" data-step="1"><span class="flow-num">1</span><h3>Checkpoint</h3><p>Start from a trained le-wm JEPA checkpoint: weights and config.</p></li>
-        <li class="flow-step" data-step="2"><span class="flow-num">2</span><h3>Quantize and export</h3><p>Read the checkpoint, quantize to an exact integer graph, fold BatchNorm, emit a canonical manifest, weights, and committed lookup tables.</p></li>
-        <li class="flow-step" data-step="3"><span class="flow-num">3</span><h3>Commit inputs</h3><p>Canonicalize the latent history, goal, and candidate actions, and check the manifest hash against the model commitment before any work.</p></li>
+        <li class="flow-step" data-step="1"><span class="flow-num">1</span><h3>Checkpoint</h3><p>Start from the trained le-wm JEPA checkpoint (<code>quentinll/lewm-pusht</code>): real weights and config.</p></li>
+        <li class="flow-step" data-step="2"><span class="flow-num">2</span><h3>Quantize and export</h3><p>Read the checkpoint, quantize the full 192-dim V0 subgraph to an exact integer graph, fold BatchNorm, emit a canonical manifest, weights, and committed lookup tables.</p></li>
+        <li class="flow-step" data-step="3"><span class="flow-num">3</span><h3>Commit inputs</h3><p>Encode a real PushT expert episode through the checkpoint's own encoders into a latent history and action embedding, canonicalize them, and check the manifest hash against the model commitment before any work.</p></li>
         <li class="flow-step" data-step="4"><span class="flow-num">4</span><h3>Run inference</h3><p>Run the exact integer reference forward pass, recording every accumulator, requant, attention dot product, cost, and the argmin into a trace.</p></li>
         <li class="flow-step" data-step="5"><span class="flow-num">5</span><h3>Assemble the proof</h3><p>Merkle-commit the trace, run Fiat-Shamir to squeeze the Freivalds vectors, and emit a self-contained AuditArtifact.</p></li>
         <li class="flow-step" data-step="6"><span class="flow-num">6</span><h3>Verify</h3><p>The verifier replays the transcript, checks every commitment, Freivalds-checks each matmul, and exactly recomputes everything else.</p></li>
         <li class="flow-step flow-verdict" data-step="7" aria-live="polite"><span class="flow-num">7</span><h3 id="verdictTitle">Accept</h3><p id="verdictText">All checks pass. The trajectory, costs, and selected action are exactly the committed quantized inference.</p></li>
       </ol>
+
+      <div class="demo-term" role="img" aria-label="Terminal output of the demo: a four-stage pipeline that exports, proves, and verifies the le-wm predictor on the real checkpoint, then rejects a forged matmul.">
+        <div class="demo-term-bar"><span></span><span></span><span></span><code>docker compose --profile real up</code></div>
+<pre class="demo-term-body"><span class="t-accent">ProvableWorldModel</span>  commit-and-audit over the le-wm world model
+<span class="t-dim">  pipeline   checkpoint -&gt; quantize -&gt; commit -&gt; encode -&gt; run -&gt; prove -&gt; verify</span>
+
+<span class="t-head">[stage 1/4] EXPORT</span>  <span class="t-dim">offline, trusted</span>
+<span class="t-dim">  &#9500;</span> model    le-wm V0 predictor (6 blocks, 16 heads), real checkpoint weights
+<span class="t-dim">  &#9500;</span> source   quentinll/lewm-pusht (Hugging Face, MIT)
+<span class="t-dim">  &#9500;</span> config   dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
+<span class="t-dim">  &#9500;</span> weights  30 tensors, 10,764,288 int8 params
+<span class="t-dim">  &#9500;</span> inputs   z_history [3x192], action embedding [3x192]
+<span class="t-dim">  &#9492;</span> source   real PushT expert episode (lerobot/pusht): 3 frames &rarr; ViT encoder; real 2D action + state
+
+<span class="t-head">[stage 2/4] PROVE</span>  <span class="t-dim">exact integer inference + commitment</span>
+<span class="t-dim">  &#9500;</span> graph    2,437 ops over the named-buffer block DAG
+<span class="t-dim">  &#9474;          per block: AdaLN-zero, 16-head attention, GELU FFN, gated residuals</span>
+<span class="t-dim">  &#9500;</span> infer    exact integer forward pass in 130 ms
+<span class="t-dim">  &#9492;</span> z_next   [11, 55, 32, -73, -57, 13]  <span class="t-dim">(predicted next-latent head)</span>
+
+<span class="t-head">[stage 3/4] VERIFY</span>  <span class="t-dim">no_std, float-free</span>
+<span class="t-dim">  &#9500;</span> challenge replayed the Fiat-Shamir transcript, derived the Freivalds r
+<span class="t-dim">  &#9500;</span> checks   Freivalds v&middot;x == r&middot;z on every projection
+<span class="t-dim">  &#9474;          exact recompute of attention, softmax, GELU, LayerNorm, residuals</span>
+<span class="t-dim">  &#9492;</span> verdict  <span class="t-ok">ACCEPT</span>  in 38 ms
+
+<span class="t-head">[stage 4/4] TAMPER</span>  <span class="t-dim">forge one matmul output</span>
+<span class="t-dim">  &#9492;</span> forged matmul op 2 -&gt; <span class="t-no">REJECT</span> FreivaldsCheckFailed { op_id: 2 }  <span class="t-dim">(caught)</span></pre>
+      </div>
+      <p class="demo-cap">The default <code>docker compose up</code> runs this exact pipeline with synthetic weights (no checkpoint download); <code>--profile real</code> proves the pretrained <code>quentinll/lewm-pusht</code> weights shown here, on a real PushT expert observation and action.</p>
     </section>
 
     <!-- FREIVALDS interactive -->
@@ -196,9 +228,9 @@
         </div>
         <div class="tier-panels">
           <div class="tier-panel is-active" data-tier="P0" id="panel-P0" role="tabpanel" aria-labelledby="tab-P0" tabindex="0">
-            <span class="tier-status shipped">implemented and tested</span>
+            <span class="tier-status shipped">implemented and tested, full model</span>
             <h3>One predictor step</h3>
-            <p>Prove <code>z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))</code> over the committed quantized graph: a single forward pass through the predictor. The demo proves a compact instance of this; the full 192-dim model is the integration target.</p>
+            <p>Prove <code>z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))</code> over the committed quantized graph: a single forward pass through the predictor. The full 192-dim, 6-block, 16-head predictor (2,437 ops: AdaLN-zero, multi-head attention, GELU feed-forward, gated residuals) proves and verifies in the Rust prover with the real <code>quentinll/lewm-pusht</code> checkpoint weights and a real PushT expert observation and action.</p>
           </div>
           <div class="tier-panel" data-tier="P1" id="panel-P1" role="tabpanel" aria-labelledby="tab-P1" tabindex="0">
             <span class="tier-status shipped">implemented and tested</span>
@@ -278,17 +310,19 @@
       <div class="start">
         <div class="start-card">
           <h3>The demo</h3>
-          <pre class="code"><span class="c-dim"># prover proves, verifier accepts, then a forged matmul is rejected</span>
+          <pre class="code"><span class="c-dim"># the full le-wm predictor: prove, verify, reject a forged matmul</span>
 git clone https://github.com/AbdelStark/ProvableWorldModel
 cd ProvableWorldModel
-docker compose up --build</pre>
+docker compose up --build
+<span class="c-dim"># or prove the real pretrained checkpoint weights</span>
+docker compose --profile real up --build export predictor-real</pre>
         </div>
         <div class="start-card">
           <h3>Without Docker</h3>
-          <pre class="code"><span class="c-dim"># the full story in one process</span>
-cargo run -p pwm-testkit --bin pwm --release
-<span class="c-dim"># machine-readable</span>
-cargo run -p pwm-testkit --bin pwm --release -- --json</pre>
+          <pre class="code"><span class="c-dim"># the full 192-dim predictor, synthetic weights</span>
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor
+<span class="c-dim"># the real pretrained checkpoint bundle</span>
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor bundle.json</pre>
         </div>
       </div>
       <div class="start-links">

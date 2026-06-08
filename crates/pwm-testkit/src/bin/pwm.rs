@@ -67,6 +67,35 @@ fn hex8(root: &[u8; 32]) -> String {
         .collect::<String>()
         + "..."
 }
+// --- pipeline visuals (box-drawing tree, respects NO_COLOR) ---
+fn commas(n: usize) -> String {
+    let s = n.to_string();
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for (i, c) in b.iter().enumerate() {
+        if i > 0 && (b.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*c as char);
+    }
+    out
+}
+fn stage(n: u32, total: u32, name: &str, sub: &str) {
+    println!(
+        "\n{} {}  {}",
+        paint("35;1", &format!("[stage {n}/{total}]")),
+        paint("1", name),
+        dim(sub)
+    );
+}
+// tree-branch connector: mid (├) for inner rows, end (└) for the last
+fn li(last: bool) -> String {
+    dim(if last { "  \u{2514}" } else { "  \u{251c}" })
+}
+// continuation line under a branch (│)
+fn cont() -> String {
+    dim("  \u{2502}")
+}
 fn next_latent(next: &[i64]) -> Vec<i64> {
     next.iter().skip((SEQ - 1) * DIM).copied().collect()
 }
@@ -501,80 +530,108 @@ fn main() {
                 "{}",
                 paint(
                     "36;1",
-                    "ProvableWorldModel: full le-wm predictor into prove_block\n"
+                    "ProvableWorldModel  commit-and-audit over the le-wm world model"
                 )
             );
-            println!("{} {}  {}", tag("prover"), paint("1", "model "), label);
+            println!(
+                "{}",
+                dim("  pipeline   checkpoint -> quantize -> commit -> encode -> run -> prove -> verify")
+            );
+
+            // --- stage 1: export (offline, trusted) ---
+            stage(1, 4, "EXPORT", "offline, trusted");
+            println!("{} model    {}", li(false), label);
             if is_real {
                 println!(
-                    "{} source  quentinll/lewm-pusht {}",
-                    tag("prover"),
+                    "{} source   quentinll/lewm-pusht {}",
+                    li(false),
                     dim("(Hugging Face, MIT), int8-quantized V0 subgraph")
                 );
             }
             println!(
-                "{} config  dim={}, history={}, heads={}, dim_head={}, mlp={}, depth={}  {}",
-                tag("prover"),
+                "{} config   dim={}, history={}, heads={}, dim_head={}, mlp={}, depth={}",
+                li(false),
                 dims.d,
                 dims.s,
                 dims.h,
                 dims.dh,
                 dims.mlp,
-                dims.depth,
-                dim("(self-attention + AdaLN + GELU FFN + residuals)")
+                dims.depth
             );
             println!(
-                "{} weights {} tensors, {} int8 params",
-                tag("prover"),
+                "{} weights  {} tensors, {} int8 params",
+                li(false),
                 weights.len(),
-                params
+                commas(params)
             );
             println!(
-                "{} inputs  z_history [{}x{}], action embedding [{}x{}]",
-                tag("prover"),
+                "{} inputs   z_history [{}x{}], action embedding [{}x{}]",
+                li(false),
                 dims.s,
                 dims.d,
                 dims.s,
                 dims.d
             );
-            println!("{}   source  {}", tag("prover"), dim(&input_source));
+            println!("{} source   {}", li(true), dim(&input_source));
+
+            // --- stage 2: prove (exact integer inference + commitment) ---
+            stage(2, 4, "PROVE", "exact integer inference + commitment");
             println!(
-                "{} graph   {} ops over the named-buffer block DAG",
-                tag("prover"),
-                proven.ops.len()
+                "{} graph    {} ops over the named-buffer block DAG",
+                li(false),
+                commas(proven.ops.len())
             );
             println!(
-                "{} infer   exact integer forward pass in {}",
-                tag("prover"),
+                "{}          {}",
+                cont(),
+                dim("per block: AdaLN-zero, 16-head attention, GELU FFN, gated residuals")
+            );
+            println!(
+                "{} infer    exact integer forward pass in {}",
+                li(false),
                 ok(&ms(infer))
             );
             println!(
-                "{}   z_next[..6] {:?}  {}",
-                tag("prover"),
+                "{} z_next   {:?}  {}",
+                li(true),
                 &out[..out.len().min(6)],
                 dim("(predicted next-latent head)")
             );
+
+            // --- stage 3: verify (no_std, float-free) ---
+            stage(3, 4, "VERIFY", "no_std, float-free");
             println!(
-                "{} challenge  replayed the Fiat-Shamir transcript, derived the Freivalds r",
-                tag("verifier")
+                "{} challenge replayed the Fiat-Shamir transcript, derived the Freivalds r",
+                li(false)
             );
             println!(
-                "{} checks     Freivalds {} on every projection; exact recompute of attention, softmax, GELU, LayerNorm, residuals",
-                tag("verifier"),
+                "{} checks   Freivalds {} on every projection",
+                li(false),
                 dim("v\u{00b7}x == r\u{00b7}z")
             );
+            println!(
+                "{}          {}",
+                cont(),
+                dim("exact recompute of attention, softmax, GELU, LayerNorm, residuals")
+            );
             match res {
-                Ok(_) => println!("{} {}  in {}", tag("verifier"), ok("ACCEPT"), ms(vtime)),
+                Ok(_) => println!("{} verdict  {}  in {}", li(true), ok("ACCEPT"), ms(vtime)),
                 Err(e) => {
-                    println!("{} {}  {e:?}", tag("verifier"), bad("REJECT"));
+                    println!("{} verdict  {}  {e:?}", li(true), bad("REJECT"));
                     exit(1);
                 }
             }
+
+            // --- stage 4: tamper (forge one matmul output) ---
+            stage(4, 4, "TAMPER", "forge one matmul output");
             match reject {
                 Some(e) => println!(
-                    "{} tamper  forged matmul op {forged_op:?} -> {} {e}",
-                    tag("verifier"),
-                    bad("REJECT")
+                    "{} forged matmul op {} -> {} {}  {}",
+                    li(true),
+                    forged_op.map(|i| i.to_string()).unwrap_or_default(),
+                    bad("REJECT"),
+                    e,
+                    dim("(caught)")
                 ),
                 None => {
                     eprintln!("tamper undetected (bug)");

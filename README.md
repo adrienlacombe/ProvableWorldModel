@@ -40,16 +40,30 @@ docker compose up --build
 ```
 
 ```
-[prover] model   le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)
-[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
-[prover] weights 30 tensors, 10764288 int8 params
-[prover] graph   2437 ops over the named-buffer block DAG
-[prover] infer   exact integer forward pass in 36 ms
-[prover]   z_next[..6] [-2, -1, 0, 1, 2, -2]  (predicted next-latent head)
-[verifier] challenge  replayed the Fiat-Shamir transcript, derived the Freivalds r
-[verifier] checks     Freivalds v·x == r·z on every projection; exact recompute of attention, softmax, GELU, LayerNorm, residuals
-[verifier] ACCEPT  in 26 ms
-[verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
+ProvableWorldModel  commit-and-audit over the le-wm world model
+  pipeline   checkpoint -> quantize -> commit -> encode -> run -> prove -> verify
+
+[stage 1/4] EXPORT  offline, trusted
+  ├ model    le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)
+  ├ config   dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
+  ├ weights  30 tensors, 10,764,288 int8 params
+  ├ inputs   z_history [3x192], action embedding [3x192]
+  └ source   synthetic quantized latents
+
+[stage 2/4] PROVE  exact integer inference + commitment
+  ├ graph    2,437 ops over the named-buffer block DAG
+  │          per block: AdaLN-zero, 16-head attention, GELU FFN, gated residuals
+  ├ infer    exact integer forward pass in 131 ms
+  └ z_next   [-2, -1, 0, 1, 2, -2]  (predicted next-latent head)
+
+[stage 3/4] VERIFY  no_std, float-free
+  ├ challenge replayed the Fiat-Shamir transcript, derived the Freivalds r
+  ├ checks   Freivalds v·x == r·z on every projection
+  │          exact recompute of attention, softmax, GELU, LayerNorm, residuals
+  └ verdict  ACCEPT  in 39 ms
+
+[stage 4/4] TAMPER  forge one matmul output
+  └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
 ```
 
 That default is the real architecture with synthetic weights (fast, no checkpoint).
@@ -95,15 +109,25 @@ cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predic
 ```
 
 ```
-[prover] model   le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
-[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
-[prover] inputs  z_history [3x192], action embedding [3x192]
-[prover]   source  real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
-[prover] graph   2437 ops over the named-buffer block DAG
-[prover] infer   exact integer forward pass in 34 ms
-[prover]   z_next[..6] [11, 55, 32, -73, -57, 13]  (predicted next-latent head)
-[verifier] ACCEPT  in 24 ms
-[verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
+[stage 1/4] EXPORT  offline, trusted
+  ├ model    le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
+  ├ source   quentinll/lewm-pusht (Hugging Face, MIT), int8-quantized V0 subgraph
+  ├ config   dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
+  ├ weights  30 tensors, 10,764,288 int8 params
+  ├ inputs   z_history [3x192], action embedding [3x192]
+  └ source   real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
+
+[stage 2/4] PROVE  exact integer inference + commitment
+  ├ graph    2,437 ops over the named-buffer block DAG
+  │          per block: AdaLN-zero, 16-head attention, GELU FFN, gated residuals
+  ├ infer    exact integer forward pass in 130 ms
+  └ z_next   [11, 55, 32, -73, -57, 13]  (predicted next-latent head)
+
+[stage 3/4] VERIFY  no_std, float-free
+  └ verdict  ACCEPT  in 38 ms
+
+[stage 4/4] TAMPER  forge one matmul output
+  └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
 ```
 
 A real expert episode (consistent observation and action) goes through the
