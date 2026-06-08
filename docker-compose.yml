@@ -1,0 +1,37 @@
+# The whole commit-and-audit scheme as a two-party game.
+#
+#   docker compose up
+#
+# The prover runs real integer inference, assembles the AuditArtifact, and writes
+# it to a shared volume. The verifier then runs the verifier-secret Freivalds
+# challenge (accept), then attempts to forge a matmul output and gets rejected.
+# Pure Rust, offline, no GPU. See demo/README.md.
+
+services:
+  prover:
+    build: .
+    image: pwm-demo:local
+    command: ["prove", "/shared/artifact.bin"]
+    volumes:
+      - artifact:/shared
+
+  verifier:
+    image: pwm-demo:local
+    command: ["audit", "/shared/artifact.bin"]
+    depends_on:
+      prover:
+        condition: service_completed_successfully
+    volumes:
+      - artifact:/shared
+    tty: true
+
+  # Optional heavy profile: the real le-wm export (PyTorch, multi-GB image).
+  #   docker compose --profile real up --build real-export
+  real-export:
+    profiles: ["real"]
+    build:
+      context: crates/pwm-export/python
+    image: pwm-lewm-export:local
+
+volumes:
+  artifact:

@@ -1,64 +1,158 @@
 # ProvableWorldModel
 
-A **commit-and-audit** proof system for deterministic, quantized inference of a
-JEPA-style world model (**LeWorldModel**). It adapts the
-[CommitLLM](https://github.com/lambdaclass/CommitLLM) scheme — Freivalds checks
-for the large linear layers, exact integer re-execution for everything else, all
-bound by Merkle commitments and a Fiat-Shamir transcript — to prove that a
-committed quantized predictor, rolled out over a fixed set of candidate action
-sequences, produced the claimed latent trajectories, costs, and selected action.
+[![CI](https://github.com/AbdelStark/ProvableWorldModel/actions/workflows/ci.yml/badge.svg)](https://github.com/AbdelStark/ProvableWorldModel/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable%20(MSRV%201.85)-orange.svg)](rust-toolchain.toml)
+[![verifier](https://img.shields.io/badge/verifier-no__std%20%C2%B7%20float--free-5eead4.svg)](crates/pwm-verifier)
 
-It proves a precise **arithmetic relation**. It does **not** claim floating-point
-PyTorch equivalence, physical truth of predictions, or zero-knowledge privacy.
+Cryptographic proof that a quantized world model planned exactly as claimed.
 
-> **Pivot (2026-06-05).** This project previously targeted a custom Circle-STARK
-> arithmetization over the Mersenne-31 field using a vendored Stwo prover. It now
-> uses the CommitLLM commit-and-audit scheme: no proving circuit, no
-> arithmetization, **stable Rust toolchain** (no nightly), and a `no_std`,
-> float-free verifier. The proof *target* (the quantized LeWorldModel predictor,
-> rollout, and fixed-candidate planner) is unchanged. See [roadmap.md](roadmap.md).
+ProvableWorldModel lets anyone verify, on a CPU with no floating point, that a
+committed quantized [LeWorldModel](https://github.com/lucas-maes/le-wm) (an
+action-conditioned JEPA world model) was run exactly as specified: rolling out
+candidate action plans, scoring them against a goal, and picking the best. It
+Freivalds-checks the large matmuls and exactly re-executes everything else, all
+bound by Merkle commitments and a Fiat-Shamir transcript. No proving circuit, no
+arithmetization, stable Rust.
 
-## Start here
+It adapts the [CommitLLM](https://github.com/lambdaclass/CommitLLM)
+commit-and-audit scheme from language models to a world model, and because the
+model runs in exact integer fixed point rather than bf16 on a GPU, it closes the
+one honest hole CommitLLM leaves open: non-reproducible attention.
 
-- [roadmap.md](roadmap.md) — the plan: pivot rationale, what carries over, phases, sequencing.
-- [specs.md](specs.md) — the normative specification of the commit-and-audit design.
-- [backlog.md](backlog.md) — the actionable issue backlog (milestones M0–M8).
-- [docs/legacy-stark/](docs/legacy-stark/) — the archived pre-pivot STARK corpus (superseded).
+**Interactive explainer:** https://abdelstark.github.io/ProvableWorldModel/
 
-## What it is
+### What it does not claim
+
+It proves a precise exact arithmetic relation. It does not claim floating point or
+PyTorch equivalence, not physical truth of the predictions, not zero knowledge.
+Public claims must be a subset of the proven statement.
+
+## Quickstart
+
+Run the whole scheme as a two-party game. A prover runs real integer inference and
+writes a proof; a verifier accepts it, then a forged matmul gets rejected.
+
+```bash
+git clone https://github.com/AbdelStark/ProvableWorldModel
+cd ProvableWorldModel
+docker compose up --build
+```
+
+```
+prover-1    | ✓ prover ran inference and wrote a 3417-byte proof to /shared/artifact.bin
+verifier-1  |   ✓ verifier drew a secret challenge r (2 vectors); checked v·x == r·z per linear op
+verifier-1  |   ✓ ACCEPT  output [6, -2]
+verifier-1  |   • forged the accumulator of linear op 100 (a fake matmul result)
+verifier-1  |   ✗ REJECT  FreivaldsCheckFailed { op_id: 100 }
+```
+
+Without Docker:
+
+```bash
+cargo run -p pwm-testkit --bin pwm --release          # the full story in one process
+cargo run -p pwm-testkit --bin pwm --release -- --json  # machine-readable
+cargo test --workspace                                  # the accept and reject suites
+```
+
+See [demo/README.md](demo/README.md) for what each step shows.
+
+## How it works
+
+```text
+  le-wm checkpoint
+        |
+        v
+  [pwm-export]   quantize to an exact integer graph, fold BatchNorm,
+        |        emit a canonical manifest + committed lookup tables
+        v
+  quantized graph + committed inputs (latent history, goal, candidate actions)
+        |
+        v
+  [pwm-prover]   run the exact integer reference inference, record the trace,
+        |        Merkle-commit it, squeeze the Freivalds challenge via Fiat-Shamir
+        v
+  AuditArtifact  (commitments + trace + claimed outputs)
+        |
+        v
+  [pwm-verifier] CPU, no_std, float-free:
+        |          - Freivalds-check every fixed-weight matmul:  v·x == r·z
+        |          - exactly recompute requant, attention, tables, LayerNorm, cost, argmin
+        |          - check the rollout recurrence and the selection
+        v
+  accept  (Ok)   or   reject  (a specific, typed VerifyError)
+```
+
+The prover runs the model normally and commits to its execution trace. The
+verifier never re-runs the model. For each fixed weight matrix it precomputes
+`v = rᵀW` once and checks `v·x == r·z` per use, which holds because
+`rᵀ(Wx) = (rᵀW)x`. Everything cheap and deterministic, attention dot products,
+requant, the nonlinear table reads, the cost and the argmin, is recomputed
+exactly from committed data.
+
+### Soundness
+
+A wrong accumulator `z ≠ Wx` passes one random Freivalds check with probability at
+most `1/p`, with `p = 2⁶¹ − 1`. A union bound over `N ≈ 10⁵` checked instances
+stays around `2⁻⁴⁴`. The same `W` is reused across every candidate, rollout step,
+and transformer block, so `v = rᵀW` is computed once per weight matrix and reused
+about `S × horizon` times: that reuse is the whole point.
+
+Mutating any load-bearing value, a weight, a scale, the rounding mode, a table, the
+op order, the planner config, a public input, a claimed output, or any trace cell,
+changes a commitment or fails an exact check, and the proof is rejected.
+
+## What gets proven
+
+| Tier | Claim | Status |
+|---|---|---|
+| **P0** | One predictor step: `z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))`. | shipped |
+| **P1** | Autoregressive rollout: each step feeds the next; the recurrence wiring is checked. | shipped |
+| **P2** | Fixed-candidate planning (V0): roll out all `S` candidates, score by goal MSE, prove the selected is the argmin. | shipped |
+| P3 | Full CEM planner (sampling, elites, distribution updates). | deferred |
+| P4 | Pixel to plan, including the ViT encoder. | deferred |
+
+All `S` candidate costs must be proven, not only the winner: proving only the
+selected candidate would be unsound.
+
+## Architecture
+
+Five small crates, one trust anchor. The verifier depends on neither the exporter
+nor any Python or float runtime; it verifies arithmetic only, sharing one
+Freivalds and trace implementation with the prover through `pwm-core`.
 
 | Crate | Role |
 |---|---|
-| `pwm-core` | Value field (M31) + audit field (Fp61), fixed-point reference, tensors, manifest types, Merkle commitments, Fiat-Shamir transcript, Freivalds check, trace model. `no_std`, no proving substrate. |
-| `pwm-export` | le-wm checkpoint → quantized integer graph → manifest + golden vectors; the Rust integer reference; the stable-worldmodel data adapter. |
-| `pwm-prover` | Run the integer reference inference, build + Merkle-commit the trace, derive challenges, emit the `AuditArtifact`. |
-| `pwm-verifier` | CPU, `no_std`, float-free: Freivalds-check the linear layers, exactly recompute the rest, check rollout / cost / argmin. |
-| `pwm-testkit` | Golden vectors, accept/reject, and mutation-test harness. |
+| [`pwm-core`](crates/pwm-core) | Fields (M31 value, Fp61 audit), fixed-point reference, tensors, Merkle commitments, Fiat-Shamir transcript, the Freivalds check, the trace model. `no_std`. |
+| [`pwm-export`](crates/pwm-export) | le-wm checkpoint to quantized integer graph, manifest, golden vectors, the Rust integer reference, the data adapter. |
+| [`pwm-prover`](crates/pwm-prover) | Run the reference inference, commit the trace, derive challenges, emit the `AuditArtifact`. |
+| [`pwm-verifier`](crates/pwm-verifier) | CPU, `no_std`, float-free. Freivalds-check the linears, recompute the rest, check rollout, cost, argmin. |
+| [`pwm-testkit`](crates/pwm-testkit) | Golden vectors, the accept and reject suites, the mutation harness, the `pwm` demo CLI. |
 
-## How it verifies
+```text
+pwm-prover --> pwm-export --> pwm-core <-- pwm-verifier
+                                  ^
+                           pwm-testkit
+```
 
-The prover runs the model normally and commits to its execution trace. A CPU
-verifier audits it:
+The argmin uniqueness check and the Freivalds probability bound are also formally
+verified in Lean 4 (no `sorry`); see [lean/](lean).
 
-- **Linear / matmul (fixed weights):** Freivalds — `v = rᵀW` precomputed once per
-  weight matrix, then `v·x == r·z` per instance. Information-theoretically sound
-  (error ≤ `N/p`, `p = 2⁶¹−1`).
-- **Requant, residual, attention inner products, softmax / GELU / SiLU /
-  LayerNorm tables, MSE, argmin:** exact integer recomputation — no tolerance.
+## The model
 
-Because the model runs in **exact integer fixed-point** (not bf16 on a GPU), the
-attention that CommitLLM cannot verify for LLMs is here recomputed exactly: there
-is no residual attention hole.
+LeWorldModel is a JEPA-style action-conditioned world model: it predicts the next
+latent, not pixels. The proven V0 subgraph is `action_encoder -> predictor ->
+pred_proj` at `latent_dim = 192`, `history_size = 3`, depth `6`, `16` heads,
+`dim_head = 64`, `mlp_dim = 2048`, which is bit-deterministic in eval mode. The
+pixel encoder (ViT-Tiny/14) is deferred to P4; V0 takes latents as inputs.
 
-## Scope tiers
+## Documentation
 
-| Statement | What it proves |
-|---|---|
-| P0 | One quantized predictor step. |
-| P1 | Autoregressive latent rollout over a horizon. |
-| P2 (V0) | Fixed-candidate planning: roll out all candidates, score by goal MSE, select the argmin. |
-| P3 | Full CEM planner (deferred). |
-| P4 | Pixel-to-plan end to end, including the ViT encoder (deferred). |
+- [Interactive explainer](https://abdelstark.github.io/ProvableWorldModel/) the visual walkthrough.
+- [specs.md](specs.md) the normative specification of the commit-and-audit design.
+- [roadmap.md](roadmap.md) the plan, the pivot rationale, and the sequencing.
+- [demo/README.md](demo/README.md) the local demo.
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ProvableWorldModel</title>
+  <meta name="description" content="A commit-and-audit proof system that lets anyone verify, on a CPU with no floating point, that a committed quantized world model was run exactly as specified." />
+  <meta property="og:title" content="ProvableWorldModel" />
+  <meta property="og:description" content="Cryptographic proof that a quantized JEPA world model planned exactly as claimed. Freivalds checks plus exact integer replay, no proving circuit." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+  <header class="nav" id="nav">
+    <a class="brand" href="#top">
+      <span class="brand-mark" aria-hidden="true"></span>
+      Provable<span class="brand-accent">WorldModel</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#how">How</a>
+      <a href="#freivalds">Freivalds</a>
+      <a href="#concepts">Concepts</a>
+      <a href="#tiers">Tiers</a>
+      <a href="#compare">vs CommitLLM</a>
+      <a href="#start">Start</a>
+      <a class="nav-cta" href="https://github.com/AbdelStark/ProvableWorldModel" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+    <button class="nav-toggle" id="navToggle" aria-label="Toggle menu">≡</button>
+  </header>
+
+  <main id="top">
+    <!-- HERO -->
+    <section class="hero" id="hero">
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-inner">
+        <p class="eyebrow">commit and audit, not a proving circuit</p>
+        <h1>Prove a world model<br />planned exactly as claimed.</h1>
+        <p class="lede">
+          ProvableWorldModel lets anyone verify, on a CPU with no floating point, that a
+          committed quantized JEPA world model was run exactly as specified: rolling out
+          candidate action plans, scoring them against a goal, and picking the best. It
+          Freivalds-checks the large matmuls and exactly re-executes everything else, all
+          bound by Merkle commitments and a Fiat-Shamir transcript.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#how">See how it works</a>
+          <a class="btn btn-ghost" href="#start">Run the demo</a>
+          <a class="btn btn-ghost" href="https://github.com/AbdelStark/ProvableWorldModel" target="_blank" rel="noopener">Source</a>
+        </div>
+        <div class="hero-stats">
+          <div class="stat"><span class="stat-num" data-count="44">2^-44</span><span class="stat-label">soundness error at 10^5 checks</span></div>
+          <div class="stat"><span class="stat-num">no_std</span><span class="stat-label">float-free verifier</span></div>
+          <div class="stat"><span class="stat-num">0</span><span class="stat-label">proving circuits</span></div>
+        </div>
+        <p class="honesty">
+          <strong>What it does not claim.</strong> It proves a precise exact arithmetic
+          relation. It does not claim floating point or PyTorch equivalence, not physical
+          truth of the predictions, not zero knowledge. Public claims must be a subset of
+          the proven statement.
+        </p>
+      </div>
+    </section>
+
+    <!-- WHY -->
+    <section class="band" id="why">
+      <div class="section-head">
+        <span class="kicker">the problem</span>
+        <h2>If a model planned your robot's next move, can you check it told the truth?</h2>
+      </div>
+      <div class="why-cols">
+        <p>
+          A world model takes a history of states and a candidate plan and predicts what
+          happens next, then a planner scores plans and picks one. Re-running the model
+          yourself defeats the purpose, and a model on someone else's GPU is a black box.
+        </p>
+        <p>
+          ProvableWorldModel turns that black box into a checkable claim. The party that
+          runs the model emits a small proof. A verifier, far cheaper than the model and
+          with no floating point, confirms the trajectory, the costs, and the selected
+          action are exactly what the committed quantized model produces. Change one
+          number anywhere and the proof fails.
+        </p>
+      </div>
+    </section>
+
+    <!-- HOW: animated flow -->
+    <section class="band alt" id="how">
+      <div class="section-head">
+        <span class="kicker">how it works</span>
+        <h2>From a checkpoint to an accepted proof, or a rejection.</h2>
+        <p class="section-sub">Press play to walk the pipeline. Flip the tamper switch to forge a matmul and watch the verifier catch it.</p>
+      </div>
+
+      <div class="flow-controls">
+        <button class="btn btn-primary" id="flowPlay">Play</button>
+        <button class="btn btn-ghost" id="flowReset">Reset</button>
+        <label class="switch">
+          <input type="checkbox" id="tamperToggle" />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span class="switch-label">Tamper the proof</span>
+        </label>
+      </div>
+
+      <ol class="flow" id="flow">
+        <li class="flow-step" data-step="1"><span class="flow-num">1</span><h3>Checkpoint</h3><p>Start from a trained le-wm JEPA checkpoint: weights and config.</p></li>
+        <li class="flow-step" data-step="2"><span class="flow-num">2</span><h3>Quantize and export</h3><p>Read the checkpoint, quantize to an exact integer graph, fold BatchNorm, emit a canonical manifest, weights, and committed lookup tables.</p></li>
+        <li class="flow-step" data-step="3"><span class="flow-num">3</span><h3>Commit inputs</h3><p>Canonicalize the latent history, goal, and candidate actions, and check the manifest hash against the model commitment before any work.</p></li>
+        <li class="flow-step" data-step="4"><span class="flow-num">4</span><h3>Run inference</h3><p>Run the exact integer reference forward pass, recording every accumulator, requant, attention dot product, cost, and the argmin into a trace.</p></li>
+        <li class="flow-step" data-step="5"><span class="flow-num">5</span><h3>Assemble the proof</h3><p>Merkle-commit the trace, run Fiat-Shamir to squeeze the Freivalds vectors, and emit a self-contained AuditArtifact.</p></li>
+        <li class="flow-step" data-step="6"><span class="flow-num">6</span><h3>Verify</h3><p>The verifier replays the transcript, checks every commitment, Freivalds-checks each matmul, and exactly recomputes everything else.</p></li>
+        <li class="flow-step flow-verdict" data-step="7"><span class="flow-num">7</span><h3 id="verdictTitle">Accept</h3><p id="verdictText">All checks pass. The trajectory, costs, and selected action are exactly the committed quantized inference.</p></li>
+      </ol>
+    </section>
+
+    <!-- FREIVALDS interactive -->
+    <section class="band" id="freivalds">
+      <div class="section-head">
+        <span class="kicker">the core trick, live</span>
+        <h2>Freivalds: check a matmul without redoing it.</h2>
+        <p class="section-sub">
+          For a linear layer <code>z = W&middot;x</code> the verifier draws a random
+          <code>r</code>, precomputes <code>v = r&#7488;W</code> once, then checks
+          <code>v&middot;x == r&middot;z</code>. It holds because
+          <code>r&#7488;(Wx) = (r&#7488;W)x</code>. Draw a challenge, then tamper
+          <code>z</code> and watch the equality break.
+        </p>
+      </div>
+
+      <div class="frei">
+        <div class="frei-board" id="freiBoard">
+          <div class="frei-row">
+            <div class="mat" id="matW"><span class="mat-label">W</span></div>
+            <span class="frei-op">&middot;</span>
+            <div class="vec" id="vecX"><span class="mat-label">x</span></div>
+            <span class="frei-op">=</span>
+            <div class="vec" id="vecZ"><span class="mat-label">z</span></div>
+          </div>
+          <div class="frei-row frei-challenge">
+            <div class="vec" id="vecR"><span class="mat-label">r</span></div>
+            <span class="frei-note">secret challenge, drawn after z is committed</span>
+          </div>
+          <div class="frei-check" id="freiCheck">
+            <div class="frei-side"><code>v&middot;x</code> <span id="vxVal" class="frei-val">?</span></div>
+            <span class="frei-eq" id="freiEq">=?=</span>
+            <div class="frei-side"><code>r&middot;z</code> <span id="rzVal" class="frei-val">?</span></div>
+          </div>
+          <div class="frei-verdict" id="freiVerdict">Draw a challenge to start.</div>
+        </div>
+        <div class="frei-controls">
+          <button class="btn btn-primary" id="freiDraw">Draw challenge r</button>
+          <button class="btn btn-ghost" id="freiTamper">Tamper z</button>
+          <button class="btn btn-ghost" id="freiReset">Reset honest z</button>
+          <p class="frei-foot">
+            A wrong <code>z</code> slips past one random <code>r</code> with probability at
+            most <code>1/p</code>. The real system uses <code>p = 2&#8310;&#185; &minus; 1</code>,
+            so the error per check is about <code>2&#8315;&#8310;&#185;</code>, and a union
+            bound over many checks stays around <code>2&#8315;&#8308;&#8308;</code>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CONCEPTS -->
+    <section class="band alt" id="concepts">
+      <div class="section-head">
+        <span class="kicker">the ideas</span>
+        <h2>Six pieces, no magic.</h2>
+      </div>
+      <div class="cards">
+        <article class="card"><h3>Freivalds checks</h3><p>For each fixed weight matrix, precompute <code>v = r&#7488;W</code> once and check <code>v&middot;x == r&middot;z</code> per use. The same weights run across every candidate, rollout step, and block, so one precompute is reused many times.</p></article>
+        <article class="card"><h3>Exact integer replay</h3><p>The cheap deterministic ops, requant, residual, attention dot products, softmax, GELU, SiLU, LayerNorm, MSE, and argmin, are recomputed exactly from committed inputs. No tolerance, no probabilistic gap, no circuit.</p></article>
+        <article class="card"><h3>Merkle commitments</h3><p>Every load-bearing value, weights, scales, rounding, tables, op order, planner config, inputs, outputs, and every trace cell, is bound by a Blake2s commitment. Anything not committed is mutable, and therefore unsound.</p></article>
+        <article class="card"><h3>Fiat-Shamir transcript</h3><p>The prover commits the trace first, then derives the challenge <code>r</code> from a transcript of the commitments. Because <code>r</code> comes after <code>z</code> is fixed, the prover cannot fake <code>z</code> to pass.</p></article>
+        <article class="card"><h3>Two fields, real soundness</h3><p>An M31 field (<code>2&#179;&#185;&minus;1</code>) encodes values; a larger Fp61 field (<code>2&#8310;&#185;&minus;1</code>) carries the Freivalds dot products for soundness headroom. Per-check error is at most <code>1/p</code>.</p></article>
+        <article class="card"><h3>No attention hole</h3><p>CommitLLM cannot verify bf16 FlashAttention because it is not reproducible. Here attention is small and integer-exact, so the verifier recomputes it directly. Full verification, no residual hole, no floating point.</p></article>
+      </div>
+    </section>
+
+    <!-- TIERS -->
+    <section class="band" id="tiers">
+      <div class="section-head">
+        <span class="kicker">what gets proven</span>
+        <h2>Statement tiers, from one step to a full plan.</h2>
+      </div>
+      <div class="tiers">
+        <div class="tier-tabs" id="tierTabs" role="tablist">
+          <button class="tier-tab is-active" data-tier="P0" role="tab">P0</button>
+          <button class="tier-tab" data-tier="P1" role="tab">P1</button>
+          <button class="tier-tab" data-tier="P2" role="tab">P2</button>
+          <button class="tier-tab" data-tier="P3" role="tab">P3</button>
+          <button class="tier-tab" data-tier="P4" role="tab">P4</button>
+        </div>
+        <div class="tier-panels">
+          <div class="tier-panel is-active" data-tier="P0">
+            <span class="tier-status shipped">shipped</span>
+            <h3>One predictor step</h3>
+            <p>Prove <code>z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))</code> over the committed quantized graph: a single forward pass through the world model.</p>
+          </div>
+          <div class="tier-panel" data-tier="P1">
+            <span class="tier-status shipped">shipped</span>
+            <h3>Autoregressive rollout</h3>
+            <p>Apply the predictor over a horizon and prove each step feeds the next. The recurrence and windowing wiring are checked, with a history of three.</p>
+          </div>
+          <div class="tier-panel" data-tier="P2">
+            <span class="tier-status shipped">shipped, the V0 deliverable</span>
+            <h3>Fixed-candidate planning</h3>
+            <p>Roll out every candidate action sequence, score each by goal MSE, and prove the selected candidate is the argmin with a smallest-index tie-break. All candidate costs must be proven, or the prover could cherry-pick.</p>
+          </div>
+          <div class="tier-panel" data-tier="P3">
+            <span class="tier-status deferred">deferred</span>
+            <h3>Full CEM planner</h3>
+            <p>The sampling loop: seeded candidates, clipping, top-k elites, and distribution updates across iterations.</p>
+          </div>
+          <div class="tier-panel" data-tier="P4">
+            <span class="tier-status deferred">deferred</span>
+            <h3>Pixel to plan</h3>
+            <p>End to end including the ViT encoder, from pixels through prediction to the chosen plan.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section class="band alt" id="compare">
+      <div class="section-head">
+        <span class="kicker">lineage</span>
+        <h2>What changed from CommitLLM.</h2>
+        <p class="section-sub">This project reuses CommitLLM's Freivalds plus exact-replay audit and adapts it from language models to a quantized world model.</p>
+      </div>
+      <div class="compare">
+        <table>
+          <thead><tr><th>Aspect</th><th>CommitLLM</th><th>ProvableWorldModel</th></tr></thead>
+          <tbody>
+            <tr><td>Matmul check</td><td>Freivalds over <code>F_p</code></td><td>Reused, <code>p = 2&#8310;&#185;&minus;1</code> over bounded ints</td></tr>
+            <tr><td>Challenge</td><td>Verifier-secret r</td><td>Fiat-Shamir r, optional verifier-secret mode</td></tr>
+            <tr><td>Non-matmul ops</td><td>Canonical f64 replay of bridge ops</td><td>Exact integer replay, no f64, no tolerance</td></tr>
+            <tr class="row-highlight"><td>Attention</td><td>Unverifiable hole, bf16 is not reproducible</td><td>Exactly recomputed, quantized integer, small sequence</td></tr>
+            <tr><td>Verifier</td><td>std plus rayon</td><td>no_std, float-free</td></tr>
+            <tr><td>Domain</td><td>Decode, sampling, LM-head logits</td><td>Latent prediction, rollout, MSE, argmin</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section class="band" id="architecture">
+      <div class="section-head">
+        <span class="kicker">the code</span>
+        <h2>Five small crates, one trust anchor.</h2>
+      </div>
+      <div class="arch">
+        <div class="arch-crates">
+          <div class="crate"><code>pwm-core</code><span>fields, fixed point, tensors, Merkle commitments, Fiat-Shamir, the Freivalds check, the trace model. no_std.</span></div>
+          <div class="crate"><code>pwm-export</code><span>checkpoint to quantized integer graph, manifest, golden vectors, the Rust integer reference.</span></div>
+          <div class="crate"><code>pwm-prover</code><span>run the reference inference, commit the trace, derive challenges, emit the artifact.</span></div>
+          <div class="crate trust"><code>pwm-verifier</code><span>CPU, no_std, float-free. Freivalds-check linears, recompute the rest, check rollout, cost, argmin.</span></div>
+          <div class="crate"><code>pwm-testkit</code><span>golden vectors, accept and reject suites, the mutation harness, the demo CLI.</span></div>
+        </div>
+        <div class="arch-dag">
+          <pre class="dag">pwm-prover --&gt; pwm-export --&gt; pwm-core &lt;-- pwm-verifier
+                              ^
+                       pwm-testkit</pre>
+          <p>The verifier depends on neither the exporter nor any Python or float runtime. It verifies arithmetic only, sharing one Freivalds and trace implementation with the prover through pwm-core.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- START -->
+    <section class="band alt" id="start">
+      <div class="section-head">
+        <span class="kicker">try it</span>
+        <h2>Run the whole game in one command.</h2>
+      </div>
+      <div class="start">
+        <div class="start-card">
+          <h3>The demo</h3>
+          <pre class="code"><span class="c-dim"># prover proves, verifier accepts, then a forged matmul is rejected</span>
+git clone https://github.com/AbdelStark/ProvableWorldModel
+cd ProvableWorldModel
+docker compose up --build</pre>
+        </div>
+        <div class="start-card">
+          <h3>Without Docker</h3>
+          <pre class="code"><span class="c-dim"># the full story in one process</span>
+cargo run -p pwm-testkit --bin pwm --release
+<span class="c-dim"># machine-readable</span>
+cargo run -p pwm-testkit --bin pwm --release -- --json</pre>
+        </div>
+      </div>
+      <div class="start-links">
+        <a class="btn btn-ghost" href="https://github.com/AbdelStark/ProvableWorldModel/blob/main/specs.md" target="_blank" rel="noopener">Specification</a>
+        <a class="btn btn-ghost" href="https://github.com/AbdelStark/ProvableWorldModel/blob/main/roadmap.md" target="_blank" rel="noopener">Roadmap</a>
+        <a class="btn btn-ghost" href="https://github.com/AbdelStark/ProvableWorldModel" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>ProvableWorldModel</span>
+      <span class="footer-dim">commit and audit for quantized world models. Apache-2.0.</span>
+      <a href="https://github.com/AbdelStark/ProvableWorldModel" target="_blank" rel="noopener">github.com/AbdelStark/ProvableWorldModel</a>
+    </div>
+  </footer>
+
+  <script src="assets/js/app.js" defer></script>
+</body>
+</html>
