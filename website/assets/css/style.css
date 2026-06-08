@@ -120,6 +120,19 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; bo
 .flow-verdict.is-active h3 { color: var(--good); }
 .flow-verdict.reject.is-active h3 { color: var(--bad); }
 
+/* demo terminal: the staged pipeline the CLI prints */
+.demo-term { margin-top: 36px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+.demo-term-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.demo-term-bar > span { width: 11px; height: 11px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--border); }
+.demo-term-bar code { margin-left: 10px; color: var(--muted); font-size: 0.82rem; }
+.demo-term-body { margin: 0; padding: 18px 20px; font-family: var(--mono); font-size: 0.82rem; line-height: 1.65; color: var(--text); overflow-x: auto; white-space: pre; }
+.demo-term .t-accent { color: var(--accent); font-weight: 700; }
+.demo-term .t-head { color: var(--accent-2); font-weight: 700; }
+.demo-term .t-dim { color: var(--muted-2); }
+.demo-term .t-ok { color: var(--good); font-weight: 700; }
+.demo-term .t-no { color: var(--bad); font-weight: 700; }
+.demo-cap { color: var(--muted); font-size: 0.92rem; margin: 16px auto 0; max-width: 820px; }
+
 /* freivalds */
 .frei { display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; align-items: start; }
 .frei-board { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; box-shadow: var(--shadow); }
