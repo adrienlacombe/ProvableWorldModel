@@ -24,14 +24,15 @@ one honest hole CommitLLM leaves open: non-reproducible attention.
 
 ### What it does not claim
 
-It proves a precise exact arithmetic relation. It does not claim floating point or
-PyTorch equivalence, not physical truth of the predictions, not zero knowledge.
-Public claims must be a subset of the proven statement.
+It proves an exact arithmetic relation. It does not claim floating-point or PyTorch
+equivalence, the physical truth of the predictions, or zero knowledge. Public
+claims must be a subset of the proven statement.
 
 ## Quickstart
 
-Run the whole scheme as a two-party game. A prover runs real integer inference and
-writes a proof; a verifier accepts it, then a forged matmul gets rejected.
+Run the whole scheme as a two-party game. A prover runs a real world-model
+predictor step in exact integer arithmetic and writes a proof; a verifier accepts
+it, then a forged matmul gets rejected.
 
 ```bash
 git clone https://github.com/AbdelStark/ProvableWorldModel
@@ -40,12 +41,19 @@ docker compose up --build
 ```
 
 ```
-prover-1    | ✓ prover ran inference and wrote a 3417-byte proof to /shared/artifact.bin
-verifier-1  |   ✓ verifier drew a secret challenge r (2 vectors); checked v·x == r·z per linear op
-verifier-1  |   ✓ ACCEPT  output [6, -2]
-verifier-1  |   • forged the accumulator of linear op 100 (a fake matmul result)
-verifier-1  |   ✗ REJECT  FreivaldsCheckFailed { op_id: 100 }
+prover-1    | [prover] model   le-wm action-conditioned predictor block (self-attention + GELU FFN + residuals)
+prover-1    | [prover] infer   exact integer forward pass in 0.027 ms
+prover-1    | [prover]   z_history [1, 0, 0, 1]  action [1, 0]
+prover-1    | [prover]   z_next    [3905, 1802]  (predicted next latent)
+prover-1    | [prover] trace   15 ops, block_root 99ba60b3...
+verifier-1  | [verifier] challenge  replayed the Fiat-Shamir transcript, derived Freivalds r for 7 linear ops
+verifier-1  | [verifier] ACCEPT     in 0.048 ms   z_next [3905, 1802]
+verifier-1  | [verifier] tamper     forged the output of matmul op 4 (a fake projection result)
+verifier-1  | [verifier] REJECT     FreivaldsCheckFailed { op_id: 4 }
 ```
+
+The demo proves the le-wm predictor architecture (attention, action conditioning,
+GELU feed-forward, residuals) as a compact instance. See [demo/README.md](demo/README.md).
 
 Without Docker:
 
@@ -86,9 +94,9 @@ See [demo/README.md](demo/README.md) for what each step shows.
 The prover runs the model normally and commits to its execution trace. The
 verifier never re-runs the model. For each fixed weight matrix it precomputes
 `v = rᵀW` once and checks `v·x == r·z` per use, which holds because
-`rᵀ(Wx) = (rᵀW)x`. Everything cheap and deterministic, attention dot products,
-requant, the nonlinear table reads, the cost and the argmin, is recomputed
-exactly from committed data.
+`rᵀ(Wx) = (rᵀW)x`. The cheap, deterministic ops are recomputed exactly from
+committed data: attention dot products, requant, the nonlinear table reads, the
+cost, and the argmin.
 
 ### Soundness
 
@@ -98,22 +106,30 @@ stays around `2⁻⁴⁴`. The same `W` is reused across every candidate, rollou
 and transformer block, so `v = rᵀW` is computed once per weight matrix and reused
 about `S × horizon` times: that reuse is the whole point.
 
-Mutating any load-bearing value, a weight, a scale, the rounding mode, a table, the
-op order, the planner config, a public input, a claimed output, or any trace cell,
-changes a commitment or fails an exact check, and the proof is rejected.
+Mutating any load-bearing value changes a commitment or fails an exact check, and
+the proof is rejected. That covers weights, scales, the rounding mode, tables, op
+order, planner config, public inputs, claimed outputs, and every trace cell.
 
 ## What gets proven
 
 | Tier | Claim | Status |
 |---|---|---|
-| **P0** | One predictor step: `z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))`. | shipped |
-| **P1** | Autoregressive rollout: each step feeds the next; the recurrence wiring is checked. | shipped |
-| **P2** | Fixed-candidate planning (V0): roll out all `S` candidates, score by goal MSE, prove the selected is the argmin. | shipped |
+| **P0** | One predictor step: `z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))`. | protocol and op set implemented and tested; demo proves a compact predictor instance |
+| **P1** | Autoregressive rollout: each step feeds the next; the recurrence wiring is checked. | implemented and tested |
+| **P2** | Fixed-candidate planning (V0): roll out all `S` candidates, score by goal MSE, prove the selected is the argmin. | implemented and tested |
 | P3 | Full CEM planner (sampling, elites, distribution updates). | deferred |
 | P4 | Pixel to plan, including the ViT encoder. | deferred |
 
-All `S` candidate costs must be proven, not only the winner: proving only the
-selected candidate would be unsound.
+What is implemented and tested today (164 tests): the commit-and-audit protocol
+(Freivalds, exact replay, Merkle commitments, Fiat-Shamir), the full predictor op
+vocabulary (attention, AdaLN, GELU and SiLU tables, LayerNorm, residuals,
+softmax), the rollout recurrence, the MSE cost, and the argmin with tie-break,
+each with accept and reject tests. The demo proves a real le-wm predictor block
+(a compact instance). Wiring the full 192-dim le-wm V0, a real checkpoint through
+the exporter into the prover, is the remaining integration step; the export side
+(quantize, BatchNorm fold, manifest) runs against the real le-wm today (the `real`
+profile). For P2, all `S` candidate costs must be proven, not only the winner:
+proving only the selected candidate would be unsound.
 
 ## Architecture
 
@@ -141,17 +157,19 @@ verified in Lean 4 (no `sorry`); see [lean/](lean).
 ## The model
 
 LeWorldModel is a JEPA-style action-conditioned world model: it predicts the next
-latent, not pixels. The proven V0 subgraph is `action_encoder -> predictor ->
-pred_proj` at `latent_dim = 192`, `history_size = 3`, depth `6`, `16` heads,
-`dim_head = 64`, `mlp_dim = 2048`, which is bit-deterministic in eval mode. The
+latent, not pixels. The target V0 subgraph the exporter ingests is
+`action_encoder -> predictor -> pred_proj` at `latent_dim = 192`,
+`history_size = 3`, depth `6`, `16` heads, `dim_head = 64`, `mlp_dim = 2048`, which
+is bit-deterministic in eval mode. The demo proves a compact instance of this
+predictor architecture; the full 192-dim model is the integration target. The
 pixel encoder (ViT-Tiny/14) is deferred to P4; V0 takes latents as inputs.
 
 ## Documentation
 
-- [Interactive explainer](https://abdelstark.github.io/ProvableWorldModel/) the visual walkthrough.
-- [specs.md](specs.md) the normative specification of the commit-and-audit design.
-- [roadmap.md](roadmap.md) the plan, the pivot rationale, and the sequencing.
-- [demo/README.md](demo/README.md) the local demo.
+- [Interactive explainer](https://abdelstark.github.io/ProvableWorldModel/): the visual walkthrough.
+- [specs.md](specs.md): the normative specification of the commit-and-audit design.
+- [roadmap.md](roadmap.md): the plan, the pivot rationale, and the sequencing.
+- [demo/README.md](demo/README.md): the local demo.
 - [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License

@@ -303,6 +303,25 @@ impl BlockOp {
         }
     }
 
+    /// Overwrite the claimed output values. Used to overlay a prover's transmitted
+    /// witness onto a verifier-reconstructed (public) op graph before auditing.
+    pub fn set_out(&mut self, value: Vec<i64>) {
+        match self {
+            BlockOp::Linear { out, .. }
+            | BlockOp::Requant { out, .. }
+            | BlockOp::Activation { out, .. }
+            | BlockOp::LayerNorm { out, .. }
+            | BlockOp::Modulate { out, .. }
+            | BlockOp::Gate { out, .. }
+            | BlockOp::Add { out, .. }
+            | BlockOp::MatMul { out, .. }
+            | BlockOp::Softmax { out, .. }
+            | BlockOp::BatchedLinear { out, .. }
+            | BlockOp::Slice { out, .. }
+            | BlockOp::Concat { out, .. } => *out = value,
+        }
+    }
+
     const fn tag(&self) -> u8 {
         match self {
             BlockOp::Linear { .. } => 0,
