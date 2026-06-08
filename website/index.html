@@ -94,8 +94,111 @@
       <div class="section-head">
         <span class="kicker">how it works</span>
         <h2>From a checkpoint to an accepted proof, or a rejection.</h2>
-        <p class="section-sub">Press play to walk the pipeline. Flip the tamper switch to forge a matmul and watch the verifier catch it.</p>
+        <p class="section-sub">The end to end flow at a glance below, then press play to walk it step by step. Flip the tamper switch to forge a matmul and watch the verifier catch it.</p>
       </div>
+
+      <figure class="pflow" role="img" aria-label="End to end pipeline as two swimlanes. Top lane, prover side, trusted and offline: stage 1 Checkpoint, the le-wm JEPA checkpoint with real weights and config from quentinll lewm-pusht. Then stage 2 Export, quantize to an exact integer graph, fold BatchNorm, emit a canonical manifest and committed lookup tables. Then stage 3 Encode, a real PushT expert episode from lerobot pusht is turned into a latent history and an action embedding. Then stage 4 Commit, canonicalize the inputs and check the manifest hash against the model commitment before any work. Then stage 5 Prove, run exact integer inference of the full six block sixteen head 192 dimensional predictor, 2,437 ops including AdaLN zero, multi head attention, GELU feed forward, and gated residuals, Merkle commit the trace, and Fiat Shamir squeeze the Freivalds challenge r. The Audit Artifact, made of commitments, trace, and claimed z next, then crosses the trust boundary. It is the only thing that crosses from prover to verifier. Bottom lane, verifier side, no_std and float free: stage 7 Verify, replay the transcript, Freivalds check every fixed weight matmul, where the check is v dot x equals r dot z and holds because r transpose times W x equals r transpose W times x, and exactly recompute attention, softmax, GELU, LayerNorm, residuals, rollout, cost, and argmin. The verifier never re-runs the model. Soundness error per check is at most one over p with p equal to two to the sixty one minus one, and the union bound over about ten to the fifth checks stays near two to the minus forty four. Final verdict: Accept when every check passes, an Ok result; or Reject with a typed VerifyError when any load bearing value is mutated, since forging one matmul output triggers FreivaldsCheckFailed.">
+        <figcaption class="pflow-cap">End to end pipeline. The prover side is trusted and offline. The verifier side is cheap, no_std, and float free, and audits arithmetic only.</figcaption>
+
+        <ul class="pflow-legend" aria-hidden="true">
+          <li class="pflow-leg"><i class="pflow-dot pflow-dot--p"></i>prover</li>
+          <li class="pflow-leg"><i class="pflow-dot pflow-dot--cross"></i>trust boundary</li>
+          <li class="pflow-leg"><i class="pflow-dot pflow-dot--v"></i>verifier</li>
+        </ul>
+
+        <div class="pflow-grid">
+
+          <!-- PROVER LANE -->
+          <div class="pflow-lane pflow-lane--prover">
+            <div class="pflow-lane-head">
+              <span class="pflow-lane-tag">prover</span>
+              <span class="pflow-lane-note">trusted, offline</span>
+            </div>
+            <ol class="pflow-track">
+              <li class="pflow-card">
+                <span class="pflow-n">1</span>
+                <h4>Checkpoint</h4>
+                <p>le-wm JEPA checkpoint: real weights and config (<code>quentinll/lewm-pusht</code>).</p>
+              </li>
+              <li class="pflow-card">
+                <span class="pflow-n">2</span>
+                <h4>Export</h4>
+                <p>Quantize to an exact integer graph, fold BatchNorm, emit a canonical manifest and committed lookup tables.</p>
+              </li>
+              <li class="pflow-card">
+                <span class="pflow-n">3</span>
+                <h4>Encode</h4>
+                <p>Real PushT episode (<code>lerobot/pusht</code>): frames to ViT encoder and projector to latent history; expert action to action embedding.</p>
+              </li>
+              <li class="pflow-card">
+                <span class="pflow-n">4</span>
+                <h4>Commit</h4>
+                <p>Canonicalize the latent history and action embedding, check the manifest hash against the model commitment before any work.</p>
+              </li>
+              <li class="pflow-card pflow-card--emph">
+                <span class="pflow-n">5</span>
+                <h4>Prove</h4>
+                <p>Exact integer inference of the full 6 block, 16 head, 192 dim predictor (2,437 ops): AdaLN zero, multi head attention, GELU FFN, gated residuals. Merkle commit the trace, Fiat Shamir squeeze the Freivalds challenge <code>r</code>.</p>
+              </li>
+            </ol>
+          </div>
+
+          <!-- CROSSING ARTIFACT -->
+          <div class="pflow-cross" aria-hidden="true">
+            <div class="pflow-boundary"><span>trust boundary</span></div>
+            <div class="pflow-artifact">
+              <span class="pflow-n pflow-n--cross">6</span>
+              <span class="pflow-artifact-tag">AuditArtifact</span>
+              <span class="pflow-artifact-body">commitments + trace + claimed <code>z_next</code></span>
+              <span class="pflow-artifact-only">the only thing that crosses</span>
+            </div>
+          </div>
+
+          <!-- VERIFIER LANE -->
+          <div class="pflow-lane pflow-lane--verifier">
+            <div class="pflow-lane-head">
+              <span class="pflow-lane-tag pflow-lane-tag--v">verifier</span>
+              <span class="pflow-lane-note">no_std, float free</span>
+            </div>
+            <ol class="pflow-track pflow-track--v">
+              <li class="pflow-card pflow-card--v">
+                <span class="pflow-n pflow-n--v">7</span>
+                <h4>Verify</h4>
+                <p>Replay the transcript. Freivalds check every fixed weight matmul, then exactly recompute attention, softmax, GELU, LayerNorm, residuals, rollout, cost, argmin. It never re-runs the model.</p>
+                <div class="pflow-frei" aria-hidden="true">
+                  <span class="pflow-frei-head">Freivalds check</span>
+                  <code class="pflow-frei-eq">v.x == r.z</code>
+                  <span class="pflow-frei-why">holds because r&#8868;(Wx) = (r&#8868;W)x</span>
+                  <span class="pflow-frei-note">soundness error per check &#8804; 1/p, p = 2&#8310;&#185; &#8722; 1; union over ~10&#8309; checks stays near 2&#8315;&#8308;&#8308;.</span>
+                </div>
+              </li>
+              <li class="pflow-term" role="presentation">
+                <span class="pflow-n pflow-n--good">8</span>
+                <h4>Verdict</h4>
+                <div class="pflow-verdicts">
+                  <div class="pflow-outcome pflow-outcome--ok">
+                    <span class="pflow-outcome-glyph" aria-hidden="true">&#10003;</span>
+                    <div>
+                      <span class="pflow-outcome-name">ACCEPT</span>
+                      <span class="pflow-outcome-desc"><code>Ok</code> when every check passes. The rollout, cost, and argmin are exactly the committed quantized inference.</span>
+                    </div>
+                  </div>
+                  <div class="pflow-outcome pflow-outcome--no">
+                    <span class="pflow-outcome-glyph" aria-hidden="true">&#10007;</span>
+                    <div>
+                      <span class="pflow-outcome-name">REJECT</span>
+                      <span class="pflow-outcome-desc">a typed <code>VerifyError</code> when any load bearing value is mutated. Forge one matmul output, get <code>FreivaldsCheckFailed</code>.</span>
+                    </div>
+                  </div>
+                </div>
+              </li>
+            </ol>
+          </div>
+
+        </div>
+
+        <p class="pflow-foot">The model runs in exact integer fixed point, so attention is reproducible: the one hole CommitLLM leaves open is closed here. The verifier audits arithmetic only.</p>
+      </figure>
 
       <div class="flow-controls">
         <button class="btn btn-primary" id="flowPlay">Play</button>
