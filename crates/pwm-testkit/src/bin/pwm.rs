@@ -451,11 +451,17 @@ fn main() {
             } else {
                 "le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)"
             };
+            let input_source = real
+                .as_ref()
+                .map(|r| r.input_source.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "synthetic quantized latents".to_string());
             let t0 = Instant::now();
             let (dims, skeleton, weights, tabs, inputs) = match real {
-                Some((d, blocks, x, c)) => {
-                    let (b, w, t, i) = lewm_predictor::build_predictor_real(d, blocks, x, c);
-                    (d, b, w, t, i)
+                Some(r) => {
+                    let (b, w, t, i) =
+                        lewm_predictor::build_predictor_real(r.dims, r.blocks, r.x, r.c);
+                    (r.dims, b, w, t, i)
                 }
                 None => {
                     let d = Dims {
@@ -524,14 +530,14 @@ fn main() {
                 params
             );
             println!(
-                "{} inputs  z_history [{}x{}], action embedding [{}x{}]  {}",
+                "{} inputs  z_history [{}x{}], action embedding [{}x{}]",
                 tag("prover"),
                 dims.s,
                 dims.d,
                 dims.s,
-                dims.d,
-                dim("(committed quantized latents)")
+                dims.d
             );
+            println!("{}   source  {}", tag("prover"), dim(&input_source));
             println!(
                 "{} graph   {} ops over the named-buffer block DAG",
                 tag("prover"),

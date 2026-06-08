@@ -73,19 +73,20 @@ See [demo/README.md](demo/README.md) for all three demo modes and the real-check
 ### Prove the real pretrained checkpoint
 
 The exporter ingests the real [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
-checkpoint, quantizes the full 192-dim V0 subgraph (the action encoder, the six
-predictor blocks, and `pred_proj`), folds the BatchNorm, and commits the manifest.
-It writes two prover bundles: the `pred_proj` head and the full predictor.
+checkpoint, encodes real PushT observation frames through the checkpoint's own ViT
+encoder + projector into a real latent history, quantizes the full 192-dim V0
+subgraph, folds the BatchNorm, and commits the manifest.
 
 ```bash
-pip install torch numpy
-# download weights.pt + config.json from the model page above, then
-LEWM_WEIGHTS=weights.pt python crates/pwm-export/python/scripts/export_lewm_v0.py \
+pip install torch numpy pillow
+# download weights.pt from the model page and a PushT GIF, then
+LEWM_WEIGHTS=weights.pt LEWM_GIF=path/to/lewm.gif \
+  python crates/pwm-export/python/scripts/export_lewm_v0.py \
   /tmp/lewm_pred_proj.json /tmp/lewm_predictor.json
 ```
 
-The full **6-block, 16-head attention predictor** with the real quantized weights
-proves and verifies in the Rust prover:
+The full **6-block, 16-head attention predictor** then proves and verifies in the
+Rust prover on the real weights and the real observation latents:
 
 ```bash
 cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predictor.json
@@ -93,13 +94,19 @@ cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predic
 
 ```
 [prover] model   le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
-[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6  (self-attention + AdaLN + GELU FFN + residuals)
-[prover] graph   2437 ops, 30 weight tensors
-[prover] infer   exact integer forward pass in 22.911 ms
-[prover]   z_next[..6] [37, 0, -7, 55, -39, -17]  (predicted next-latent head)
-[verifier] ACCEPT  in 23.876 ms
+[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
+[prover] inputs  z_history [3x192], action embedding [3x192]
+[prover]   source  real PushT observation: 3 frames from lewm.gif -> ViT encoder -> projector (action is a stand-in)
+[prover] graph   2437 ops over the named-buffer block DAG
+[prover] infer   exact integer forward pass in 37 ms
+[prover]   z_next[..6] [-19, 41, -30, 1, 2, 12]  (predicted next-latent head)
+[verifier] ACCEPT  in 25 ms
 [verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
 ```
+
+A real observation goes through the checkpoint's own encoder to produce the latent
+history; the encode is the trusted offline step (the image encoder is P4-deferred
+for proving), and the predictor step is what the no_std verifier audits.
 
 The predictor is built as the real le-wm architecture over the named-buffer block
 DAG: per ConditionalBlock, AdaLN-zero conditioning (`SiLU(c) -> Linear -> chunk6`)
