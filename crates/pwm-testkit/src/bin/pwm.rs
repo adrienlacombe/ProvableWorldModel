@@ -16,8 +16,9 @@
 //! pwm prove-predictor [bundle]  # prove the full 6-block 16-head predictor (real or synthetic)
 //! ```
 //!
-//! Add `--json` for machine-readable output. The docker demo runs a prover service
-//! (`prove`) and a verifier service (`audit`) over a shared proof file.
+//! Add `--json` for machine-readable output. `docker compose up` runs
+//! `prove-predictor` (the real architecture); `--profile real` proves the real
+//! pretrained checkpoint.
 
 use std::env;
 use std::fs;
@@ -444,23 +445,32 @@ fn main() {
                 });
                 lewm_predictor::load_real_predictor(&j)
             });
-            let label = if real.is_some() {
+            let is_real = real.is_some();
+            let label = if is_real {
                 "le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights"
             } else {
                 "le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)"
             };
             let t0 = Instant::now();
-            let (skeleton, weights, tabs, inputs) = match real {
-                Some((d, blocks, x, c)) => lewm_predictor::build_predictor_real(d, blocks, x, c),
-                None => lewm_predictor::build_predictor(Dims {
-                    d: 192,
-                    s: 3,
-                    h: 16,
-                    dh: 64,
-                    mlp: 2048,
-                    depth: 6,
-                }),
+            let (dims, skeleton, weights, tabs, inputs) = match real {
+                Some((d, blocks, x, c)) => {
+                    let (b, w, t, i) = lewm_predictor::build_predictor_real(d, blocks, x, c);
+                    (d, b, w, t, i)
+                }
+                None => {
+                    let d = Dims {
+                        d: 192,
+                        s: 3,
+                        h: 16,
+                        dh: 64,
+                        mlp: 2048,
+                        depth: 6,
+                    };
+                    let (b, w, t, i) = lewm_predictor::build_predictor(d);
+                    (d, b, w, t, i)
+                }
             };
+            let params: usize = weights.iter().map(|t| t.data().len()).sum();
             let proven = lewm_predictor::prove(&skeleton, &weights, &tabs, &inputs);
             let infer = t0.elapsed();
             let tv = Instant::now();
@@ -489,16 +499,43 @@ fn main() {
                 )
             );
             println!("{} {}  {}", tag("prover"), paint("1", "model "), label);
+            if is_real {
+                println!(
+                    "{} source  quentinll/lewm-pusht {}",
+                    tag("prover"),
+                    dim("(Hugging Face, MIT), int8-quantized V0 subgraph")
+                );
+            }
             println!(
-                "{} config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6  {}",
+                "{} config  dim={}, history={}, heads={}, dim_head={}, mlp={}, depth={}  {}",
                 tag("prover"),
+                dims.d,
+                dims.s,
+                dims.h,
+                dims.dh,
+                dims.mlp,
+                dims.depth,
                 dim("(self-attention + AdaLN + GELU FFN + residuals)")
             );
             println!(
-                "{} graph   {} ops, {} weight tensors",
+                "{} weights {} tensors, {} int8 params",
                 tag("prover"),
-                proven.ops.len(),
-                weights.len()
+                weights.len(),
+                params
+            );
+            println!(
+                "{} inputs  z_history [{}x{}], action embedding [{}x{}]  {}",
+                tag("prover"),
+                dims.s,
+                dims.d,
+                dims.s,
+                dims.d,
+                dim("(committed quantized latents)")
+            );
+            println!(
+                "{} graph   {} ops over the named-buffer block DAG",
+                tag("prover"),
+                proven.ops.len()
             );
             println!(
                 "{} infer   exact integer forward pass in {}",
@@ -510,6 +547,15 @@ fn main() {
                 tag("prover"),
                 &out[..out.len().min(6)],
                 dim("(predicted next-latent head)")
+            );
+            println!(
+                "{} challenge  replayed the Fiat-Shamir transcript, derived the Freivalds r",
+                tag("verifier")
+            );
+            println!(
+                "{} checks     Freivalds {} on every projection; exact recompute of attention, softmax, GELU, LayerNorm, residuals",
+                tag("verifier"),
+                dim("v\u{00b7}x == r\u{00b7}z")
             );
             match res {
                 Ok(_) => println!("{} {}  in {}", tag("verifier"), ok("ACCEPT"), ms(vtime)),

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# One command: build the image and play the commit-and-audit challenge game.
-# The prover writes a proof to a shared volume; the verifier accepts it, then
-# tries to forge a matmul and gets rejected. Exits with the verifier's code.
+# The real le-wm predictor architecture (192-dim, 16 heads, 6 blocks), proven and
+# verified in exact integer arithmetic. Pure Rust, fast, offline (synthetic weights).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec docker compose up --build --exit-code-from verifier
+exec docker compose up --build

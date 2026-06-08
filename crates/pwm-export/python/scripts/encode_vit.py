@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real ViT-Tiny/14 pixel encode + E-208 bundle (backlog D-804/E-208).
 
-le-wm's V0 encoder is `vit_hf(size=tiny, patch_size=14, pretrained=false)` — a HF
+le-wm's V0 encoder is `vit_hf(size=tiny, patch_size=14, pretrained=false)`, a HF
 ViT trained from scratch (V0 uses **no** DINO weights; that is the V3 option). We
 instantiate the real HF ViT (random init, faithful to `pretrained: false`), run a
 real forward on an image batch, and feed the real patch latents into the repo's
