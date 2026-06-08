@@ -24,5 +24,6 @@
 pub mod accept_reject;
 pub mod demo;
 pub mod golden;
+pub mod lewm;
 pub mod mutation;
 pub mod predictor;
