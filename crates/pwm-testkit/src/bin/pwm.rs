@@ -13,6 +13,7 @@
 //! pwm audit  <file>     # the verifier's story: challenge + accept, then tamper -> reject
 //! pwm tamper <in> <out> # forge one matmul output (the canonical Freivalds-caught lie)
 //! pwm prove-lewm <json> # prove the REAL le-wm pred_proj head from an export bundle
+//! pwm prove-predictor [bundle]  # prove the full 6-block 16-head predictor (real or synthetic)
 //! ```
 //!
 //! Add `--json` for machine-readable output. The docker demo runs a prover service
@@ -24,6 +25,7 @@ use std::process::exit;
 use std::time::Instant;
 
 use pwm_core::serialize::canonical_bytes;
+use pwm_testkit::lewm_predictor::{self, Dims};
 use pwm_testkit::predictor::{
     self, PredictorProof, ACTION_DIM, DIM, MLP, SEQ, V0_DEPTH, V0_DIM, V0_HEADS,
 };
@@ -432,8 +434,105 @@ fn main() {
                 ok("real le-wm pred_proj head proven and verified; a forged matmul is caught.")
             );
         }
+        "prove-predictor" => {
+            // With a bundle: the real 6-block 16-head predictor from the checkpoint.
+            // Without: the real V0 dims (192/16/64, depth 6) over synthetic weights.
+            let real = pos.get(1).map(|path| {
+                let j = fs::read_to_string(path).unwrap_or_else(|e| {
+                    eprintln!("read {path} failed: {e}");
+                    exit(1);
+                });
+                lewm_predictor::load_real_predictor(&j)
+            });
+            let label = if real.is_some() {
+                "le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights"
+            } else {
+                "le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)"
+            };
+            let t0 = Instant::now();
+            let (skeleton, weights, tabs, inputs) = match real {
+                Some((d, blocks, x, c)) => lewm_predictor::build_predictor_real(d, blocks, x, c),
+                None => lewm_predictor::build_predictor(Dims {
+                    d: 192,
+                    s: 3,
+                    h: 16,
+                    dh: 64,
+                    mlp: 2048,
+                    depth: 6,
+                }),
+            };
+            let proven = lewm_predictor::prove(&skeleton, &weights, &tabs, &inputs);
+            let infer = t0.elapsed();
+            let tv = Instant::now();
+            let res = lewm_predictor::verify(&proven, &weights, &tabs, &inputs);
+            let vtime = tv.elapsed();
+            let mut forged = proven.clone();
+            let forged_op = lewm_predictor::tamper(&mut forged);
+            let reject = lewm_predictor::verify(&forged, &weights, &tabs, &inputs)
+                .err()
+                .map(|e| format!("{e:?}"));
+            let out = res.as_ref().ok().cloned().unwrap_or_default();
+            if json {
+                println!(
+                    "{}",
+                    json!({"model": label, "ops": proven.ops.len(), "weight_tensors": weights.len(),
+                        "accepted": res.is_ok(), "z_out_head": &out[..out.len().min(6)],
+                        "tamper": {"forged_op": forged_op, "rejected_with": reject}})
+                );
+                return;
+            }
+            println!(
+                "{}",
+                paint(
+                    "36;1",
+                    "ProvableWorldModel: full le-wm predictor into prove_block\n"
+                )
+            );
+            println!("{} {}  {}", tag("prover"), paint("1", "model "), label);
+            println!(
+                "{} config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6  {}",
+                tag("prover"),
+                dim("(self-attention + AdaLN + GELU FFN + residuals)")
+            );
+            println!(
+                "{} graph   {} ops, {} weight tensors",
+                tag("prover"),
+                proven.ops.len(),
+                weights.len()
+            );
+            println!(
+                "{} infer   exact integer forward pass in {}",
+                tag("prover"),
+                ok(&ms(infer))
+            );
+            println!(
+                "{}   z_next[..6] {:?}  {}",
+                tag("prover"),
+                &out[..out.len().min(6)],
+                dim("(predicted next-latent head)")
+            );
+            match res {
+                Ok(_) => println!("{} {}  in {}", tag("verifier"), ok("ACCEPT"), ms(vtime)),
+                Err(e) => {
+                    println!("{} {}  {e:?}", tag("verifier"), bad("REJECT"));
+                    exit(1);
+                }
+            }
+            match reject {
+                Some(e) => println!(
+                    "{} tamper  forged matmul op {forged_op:?} -> {} {e}",
+                    tag("verifier"),
+                    bad("REJECT")
+                ),
+                None => {
+                    eprintln!("tamper undetected (bug)");
+                    exit(1);
+                }
+            }
+            println!("\n{}", ok("the full 6-block 16-head predictor proven and verified; a forged matmul is caught."));
+        }
         other => {
-            eprintln!("unknown command {other:?}; usage: pwm [demo|prove <f>|verify <f>|audit <f>|tamper <in> <out>|prove-lewm <bundle>] [--json]");
+            eprintln!("unknown command {other:?}; usage: pwm [demo|prove <f>|verify <f>|audit <f>|tamper <in> <out>|prove-lewm <bundle>|prove-predictor [bundle]] [--json]");
             exit(2);
         }
     }

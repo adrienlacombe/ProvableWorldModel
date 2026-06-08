@@ -159,8 +159,33 @@ def main() -> None:
     }
     print(f"calibrated requant shifts: fc1={fc1_shift}, fc2={fc2_shift}")
     Path(out_path).write_text(json.dumps(bundle))
-    print(f"\nwrote Rust prover bundle ({Path(out_path).stat().st_size} bytes) to {out_path}")
+    print(f"\nwrote pred_proj bundle ({Path(out_path).stat().st_size} bytes) to {out_path}")
     print("verify it: cargo run -p pwm-testkit --bin pwm --release -- prove-lewm " + out_path)
+
+    # --- Full predictor bundle: the real 6-block, 16-head attention predictor. ---
+    def q8(w: np.ndarray) -> list:
+        return quantize.quantize_array(w)[0]
+    blocks = []
+    for i in range(DEPTH):
+        p = f"predictor.transformer.layers.{i}"
+        blocks.append({
+            "qkv": q8(sd[f"{p}.attn.to_qkv.weight"]),
+            "out": q8(sd[f"{p}.attn.to_out.0.weight"]),
+            "fc1": q8(sd[f"{p}.mlp.net.1.weight"]),
+            "fc2": q8(sd[f"{p}.mlp.net.4.weight"]),
+            "adaln": q8(sd[f"{p}.adaLN_modulation.1.weight"]),
+        })
+    pred_bundle = {
+        "model": "lewm-pusht full predictor (6 blocks, 16 heads), real quantized weights",
+        "dims": {"d": DIM, "s": HIST, "h": HEADS, "dh": DIM_HEAD, "mlp": MLP, "depth": DEPTH},
+        "x": quantize.quantize_array(rng.standard_normal(HIST * DIM))[0],  # quantized latent history
+        "c": quantize.quantize_array(rng.standard_normal(HIST * DIM))[0],  # quantized action embedding
+        "blocks": blocks,
+    }
+    pred_path = sys.argv[2] if len(sys.argv) > 2 else "/tmp/lewm_predictor.json"
+    Path(pred_path).write_text(json.dumps(pred_bundle))
+    print(f"wrote predictor bundle ({Path(pred_path).stat().st_size} bytes) to {pred_path}")
+    print("verify it: cargo run -p pwm-testkit --bin pwm --release -- prove-predictor " + pred_path)
 
 
 if __name__ == "__main__":

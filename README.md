@@ -70,29 +70,39 @@ See [demo/README.md](demo/README.md) for what each step shows.
 The exporter ingests the real [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
 checkpoint, quantizes the full 192-dim V0 subgraph (the action encoder, the six
 predictor blocks, and `pred_proj`), folds the BatchNorm, and commits the manifest.
-The Rust prover then proves the real `pred_proj` head on a latent with the real
-folded weights:
+It writes two prover bundles: the `pred_proj` head and the full predictor.
 
 ```bash
 pip install torch numpy
 # download weights.pt + config.json from the model page above, then
-LEWM_WEIGHTS=weights.pt python crates/pwm-export/python/scripts/export_lewm_v0.py /tmp/lewm.json
-cargo run -p pwm-testkit --bin pwm --release -- prove-lewm /tmp/lewm.json
+LEWM_WEIGHTS=weights.pt python crates/pwm-export/python/scripts/export_lewm_v0.py \
+  /tmp/lewm_pred_proj.json /tmp/lewm_predictor.json
+```
+
+The full **6-block, 16-head attention predictor** with the real quantized weights
+proves and verifies in the Rust prover:
+
+```bash
+cargo run -p pwm-testkit --bin pwm --release -- prove-predictor /tmp/lewm_predictor.json
 ```
 
 ```
-[prover] model   lewm-pusht pred_proj head (Linear -> GELU -> Linear), real BN-folded weights
-[prover] config  dim=192, mlp=2048  (real BN-folded pred_proj weights from quentinll/lewm-pusht)
-[prover] infer   exact integer forward pass in 25.875 ms
-[prover]   input  z[..6] [4, -4, 20, 3, -17, 12]   output z_proj[..6] [-11, 9, 17, 5, 11, 49]
-[verifier] ACCEPT  in 25.147 ms
-[verifier] tamper  forged matmul op Some(100) -> REJECT FreivaldsCheckFailed { op_id: 100 }
+[prover] model   le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
+[prover] config  dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6  (self-attention + AdaLN + GELU FFN + residuals)
+[prover] graph   2437 ops, 30 weight tensors
+[prover] infer   exact integer forward pass in 22.911 ms
+[prover]   z_next[..6] [37, 0, -7, 55, -39, -17]  (predicted next-latent head)
+[verifier] ACCEPT  in 23.876 ms
+[verifier] tamper  forged matmul op Some(2) -> REJECT FreivaldsCheckFailed { op_id: 2 }
 ```
 
-The full 6-block, 16-head attention predictor is quantized and committed by the
-same export. Proving it end to end in the Rust prover is the next step: the op
-kernels exist (`prove_block`), it needs the 16-head graph wired and its activation
-scales calibrated, exactly as done here for the `pred_proj` head.
+The predictor is built as the real le-wm architecture over the named-buffer block
+DAG: per ConditionalBlock, AdaLN-zero conditioning (`SiLU(c) -> Linear -> chunk6`)
+modulates a 16-head self-attention sub-block (per head: `Q.Kᵀ -> softmax ->
+prob.V`) and a GELU feed-forward, each with a gated residual, with the multi-head
+reshapes expressed as Slice/Concat. The verifier Freivalds-checks every projection
+and exactly recomputes the attention, softmax, GELU, LayerNorm, and residuals.
+`prove-lewm` proves the smaller `pred_proj` head on its own.
 
 ## How it works
 
@@ -143,23 +153,24 @@ order, planner config, public inputs, claimed outputs, and every trace cell.
 
 | Tier | Claim | Status |
 |---|---|---|
-| **P0** | One predictor step: `z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))`. | protocol and op set implemented and tested; demo proves a compact predictor instance |
+| **P0** | One predictor step: `z_next = PredProj(ARPredictor(z_hist, ActEnc(actions)))`. | implemented and tested; the full 192-dim 6-block 16-head predictor proves and verifies with real checkpoint weights |
 | **P1** | Autoregressive rollout: each step feeds the next; the recurrence wiring is checked. | implemented and tested |
 | **P2** | Fixed-candidate planning (V0): roll out all `S` candidates, score by goal MSE, prove the selected is the argmin. | implemented and tested |
 | P3 | Full CEM planner (sampling, elites, distribution updates). | deferred |
 | P4 | Pixel to plan, including the ViT encoder. | deferred |
 
-What is implemented and tested today (166 tests): the commit-and-audit protocol
+What is implemented and tested today (170 tests): the commit-and-audit protocol
 (Freivalds, exact replay, Merkle commitments, Fiat-Shamir), the full predictor op
 vocabulary (attention, AdaLN, GELU and SiLU tables, LayerNorm, residuals,
 softmax), the rollout recurrence, the MSE cost, and the argmin with tie-break,
-each with accept and reject tests. The demo proves a real le-wm predictor block
-(a compact instance). The exporter ingests the real `quentinll/lewm-pusht`
-checkpoint and quantizes the full 192-dim V0 subgraph, and the Rust prover proves
-its `pred_proj` head with the real folded weights (`pwm prove-lewm`). Wiring the
-full 6-block, 16-head attention predictor into the prover is the remaining step.
-For P2, all `S` candidate costs must be proven, not only the winner: proving only
-the selected candidate would be unsound.
+each with accept and reject tests. The exporter ingests the real
+`quentinll/lewm-pusht` checkpoint and quantizes the full 192-dim V0 subgraph, and
+the Rust prover proves and verifies the full 6-block, 16-head, 192-dim predictor
+with the real quantized weights (`pwm prove-predictor`), plus the `pred_proj` head
+on its own (`pwm prove-lewm`). The proof attests the exact integer (quantized)
+relation; per-tensor activation-scale calibration for float-faithful outputs is a
+further refinement. For P2, all `S` candidate costs must be proven, not only the
+winner: proving only the selected candidate would be unsound.
 
 ## Architecture
 
@@ -190,8 +201,8 @@ LeWorldModel is a JEPA-style action-conditioned world model: it predicts the nex
 latent, not pixels. The target V0 subgraph the exporter ingests is
 `action_encoder -> predictor -> pred_proj` at `latent_dim = 192`,
 `history_size = 3`, depth `6`, `16` heads, `dim_head = 64`, `mlp_dim = 2048`, which
-is bit-deterministic in eval mode. The demo proves a compact instance of this
-predictor architecture; the full 192-dim model is the integration target. The
+is bit-deterministic in eval mode. The full 192-dim predictor proves and verifies
+in the Rust prover with the real quantized weights (`pwm prove-predictor`). The
 pixel encoder (ViT-Tiny/14) is deferred to P4; V0 takes latents as inputs.
 
 ## Documentation
