@@ -1,0 +1,14 @@
+# Keep the build context small and the build hermetic.
+target/
+lean/
+.git/
+.github/
+website/
+docs/
+demo/
+third_party/
+*.md
+# Use the image's pinned toolchain (1.85), not a resolved "stable".
+rust-toolchain.toml
+# Python export pipeline is not needed to build the Rust demo binary.
+crates/*/python/
