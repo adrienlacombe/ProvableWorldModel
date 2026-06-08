@@ -177,11 +177,29 @@ def main() -> None:
             "fc2": q8(sd[f"{p}.mlp.net.4.weight"]),
             "adaln": q8(sd[f"{p}.adaLN_modulation.1.weight"]),
         })
+    # Inputs: real observation latents if LEWM_GIF is set (encode real PushT frames
+    # through the checkpoint's ViT encoder + projector), else synthetic latents.
+    gif = os.environ.get("LEWM_GIF")
+    if gif and Path(gif).exists():
+        from pwm_export import encode
+        tsd = torch.load(os.environ.get("LEWM_WEIGHTS", "weights.pt"),
+                         map_location="cpu", weights_only=True)
+        emb, act_emb, total = encode.encode_history(tsd, gif, HIST, action_dim=10)
+        x_q = quantize.quantize_array(emb.flatten())[0]
+        c_q = quantize.quantize_array(act_emb.flatten())[0]
+        input_source = (f"real PushT observation: {HIST} frames from {Path(gif).name} "
+                        f"({total} total) -> ViT encoder -> projector (action is a stand-in)")
+        print(f"[encode] {input_source}")
+    else:
+        x_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
+        c_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
+        input_source = "synthetic quantized latents (set LEWM_GIF to encode a real observation)"
     pred_bundle = {
         "model": "lewm-pusht full predictor (6 blocks, 16 heads), real quantized weights",
+        "input_source": input_source,
         "dims": {"d": DIM, "s": HIST, "h": HEADS, "dh": DIM_HEAD, "mlp": MLP, "depth": DEPTH},
-        "x": quantize.quantize_array(rng.standard_normal(HIST * DIM))[0],  # quantized latent history
-        "c": quantize.quantize_array(rng.standard_normal(HIST * DIM))[0],  # quantized action embedding
+        "x": x_q,
+        "c": c_q,
         "blocks": blocks,
     }
     pred_path = sys.argv[2] if len(sys.argv) > 2 else "/tmp/lewm_predictor.json"

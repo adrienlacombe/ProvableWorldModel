@@ -561,12 +561,26 @@ pub fn tamper(proven: &mut Block) -> Option<u32> {
     None
 }
 
-/// Parse a full predictor export bundle into dims, per-block real weights, and
-/// the quantized inputs.
-pub fn load_real_predictor(json: &str) -> (Dims, Vec<RealBlock>, Vec<i64>, Vec<i64>) {
+/// A loaded predictor bundle: dims, per-block real weights, the quantized inputs,
+/// and a description of where the inputs came from.
+pub struct RealPredictor {
+    /// Predictor dimensions.
+    pub dims: Dims,
+    /// Per-block real quantized weights.
+    pub blocks: Vec<RealBlock>,
+    /// Quantized latent history input.
+    pub x: Vec<i64>,
+    /// Quantized action embedding input.
+    pub c: Vec<i64>,
+    /// Provenance of the inputs (real observation vs synthetic).
+    pub input_source: String,
+}
+
+/// Parse a full predictor export bundle.
+pub fn load_real_predictor(json: &str) -> RealPredictor {
     let v: Value = serde_json::from_str(json).expect("predictor bundle json");
     let g = |k: &str| v["dims"][k].as_u64().expect("dim") as usize;
-    let d = Dims {
+    let dims = Dims {
         d: g("d"),
         s: g("s"),
         h: g("h"),
@@ -581,8 +595,6 @@ pub fn load_real_predictor(json: &str) -> (Dims, Vec<RealBlock>, Vec<i64>, Vec<i
             .map(|x| x.as_i64().expect("int"))
             .collect()
     };
-    let x = ints(&v["x"]);
-    let c = ints(&v["c"]);
     let blocks = v["blocks"]
         .as_array()
         .expect("blocks")
@@ -595,7 +607,13 @@ pub fn load_real_predictor(json: &str) -> (Dims, Vec<RealBlock>, Vec<i64>, Vec<i
             adaln: ints(&bk["adaln"]),
         })
         .collect();
-    (d, blocks, x, c)
+    RealPredictor {
+        dims,
+        blocks,
+        x: ints(&v["x"]),
+        c: ints(&v["c"]),
+        input_source: v["input_source"].as_str().unwrap_or("").to_string(),
+    }
 }
 
 #[cfg(test)]
