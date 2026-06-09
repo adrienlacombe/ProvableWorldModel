@@ -32,6 +32,38 @@ fn loads_committed_sample_fixture() {
 }
 
 #[test]
+fn committed_requantize_vectors_match_the_primitive() {
+    // The fixture is the differential oracle (specs.md §15, INV-TEST-02/06): run each
+    // committed vector through the real Rust primitive, not just parse it. This catches
+    // any silent divergence between the JSON and `requantize` (the companion test in
+    // pwm-core/tests/requantize.rs hardcodes the same values, so without this they could
+    // drift apart undetected).
+    use pwm_core::fixed_point::{requantize, Rounding::NearestTiesToEven};
+    let fixture =
+        load_fixture(fixture_path("requantize.ntte.sample.json")).expect("sample fixture loads");
+    assert_eq!(fixture.primitive, "requantize");
+    for v in &fixture.vectors {
+        // requantize fixtures encode `inputs` as [n, shift] and `outputs` as [result].
+        assert_eq!(v.inputs.len(), 2, "requantize vector needs [n, shift]");
+        assert_eq!(v.outputs.len(), 1, "requantize vector needs one output");
+        let (n, shift) = (v.inputs[0], v.inputs[1]);
+        let got = requantize(
+            n,
+            u32::try_from(shift).expect("non-negative shift"),
+            0,
+            i64::MIN,
+            i64::MAX,
+            NearestTiesToEven,
+        );
+        assert_eq!(
+            got, v.outputs[0],
+            "fixture vector {:?}: requantize({n}, {shift}) = {got}, want {}",
+            v.label, v.outputs[0]
+        );
+    }
+}
+
+#[test]
 fn rejects_float_in_fixed_point_section() {
     // The fixed-point section is integers only; a float must not silently coerce.
     let json = r#"{

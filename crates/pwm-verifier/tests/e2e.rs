@@ -342,6 +342,44 @@ fn reject_batched_planning_tampered_candidate() {
     ));
 }
 
+// The argmin and cost checks live outside the per-candidate Freivalds loop, so the
+// amortized `verify_planning_batched` path must enforce them independently of
+// `verify_planning`. These mirror the per-candidate reject tests on the fast path.
+
+#[test]
+fn reject_batched_planning_tie_break_violation() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Candidate 2 ties candidate 0 at cost 0, but candidate 0 is the earliest minimum.
+    proof.selected_index = 2;
+    proof.selected_cost = proof.costs[2];
+    assert_eq!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::ArgminViolation)
+    );
+}
+
+#[test]
+fn reject_batched_planning_not_minimum() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    proof.selected_index = 1; // cost 17 is not the minimum
+    proof.selected_cost = proof.costs[1];
+    assert_eq!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::ArgminViolation)
+    );
+}
+
+#[test]
+fn reject_batched_planning_forged_cost() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Claim candidate 1 is cheap without changing its (Freivalds-verified) output.
+    proof.costs[1] = -5;
+    assert!(matches!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::CostMismatch { index: 1 })
+    ));
+}
+
 #[test]
 fn reject_planning_tie_break_violation() {
     let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
