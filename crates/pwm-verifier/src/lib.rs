@@ -400,7 +400,9 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
     )
     .commitment();
     if quantization_commitment != pi.quantization_commitment {
-        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Quantization));
+        return Err(VerifyError::CommitmentMismatch(
+            CommitmentKind::Quantization,
+        ));
     }
 
     if PlannerBinding::p0_sentinel().commitment() != pi.planner_config_commitment {
@@ -1074,7 +1076,9 @@ pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError>
     )
     .commitment();
     if quantization_commitment != pi.quantization_commitment {
-        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Quantization));
+        return Err(VerifyError::CommitmentMismatch(
+            CommitmentKind::Quantization,
+        ));
     }
     if PlannerBinding::p0_sentinel().commitment() != pi.planner_config_commitment {
         return Err(VerifyError::CommitmentMismatch(CommitmentKind::Planner));

@@ -321,12 +321,11 @@ pub fn prove_block(
                 ..
             } => {
                 let x = get(&bufs, in_buf)?;
-                let mode = Rounding::from_discriminant(rounding).ok_or(
-                    BlockError::InvalidRounding {
+                let mode =
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
                         op_id,
                         discriminant: rounding,
-                    },
-                )?;
+                    })?;
                 let out: Vec<i64> = x
                     .iter()
                     .map(|&n| requantize(n, shift, zero_point, clamp_lo, clamp_hi, mode))
@@ -379,12 +378,11 @@ pub fn prove_block(
             } => {
                 let x = get(&bufs, in_buf)?;
                 let t = table(table_id)?;
-                let mode = Rounding::from_discriminant(rounding).ok_or(
-                    BlockError::InvalidRounding {
+                let mode =
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
                         op_id,
                         discriminant: rounding,
-                    },
-                )?;
+                    })?;
                 let out = layernorm(&x, t, shift, clamp_lo, clamp_hi, mode)
                     .ok_or(BlockError::TableDomain)?;
                 bufs.insert(out_buf, out.clone());
@@ -416,12 +414,11 @@ pub fn prove_block(
                 let x = get(&bufs, x_buf)?;
                 let scale = get(&bufs, scale_buf)?;
                 let shift = get(&bufs, shift_buf)?;
-                let mode = Rounding::from_discriminant(rounding).ok_or(
-                    BlockError::InvalidRounding {
+                let mode =
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
                         op_id,
                         discriminant: rounding,
-                    },
-                )?;
+                    })?;
                 if scale.len() != x.len() || shift.len() != x.len() {
                     return Err(BlockError::Shape);
                 }
@@ -456,12 +453,11 @@ pub fn prove_block(
             } => {
                 let g = get(&bufs, gate_buf)?;
                 let x = get(&bufs, x_buf)?;
-                let mode = Rounding::from_discriminant(rounding).ok_or(
-                    BlockError::InvalidRounding {
+                let mode =
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
                         op_id,
                         discriminant: rounding,
-                    },
-                )?;
+                    })?;
                 if g.len() != x.len() {
                     return Err(BlockError::Shape);
                 }
