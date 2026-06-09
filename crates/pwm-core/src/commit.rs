@@ -26,6 +26,8 @@ pub const TAG_PLANNER: &[u8; 16] = b"pwm.plan.v1\0\0\0\0\0";
 pub const TAG_OUTPUT: &[u8; 16] = b"pwm.out.v1\0\0\0\0\0\0";
 /// Domain tag for a committed input tensor.
 pub const TAG_TENSOR: &[u8; 16] = b"pwm.tensor.v1\0\0\0";
+/// Domain tag for the committed predictor input buffers.
+pub const TAG_PINPUTS: &[u8; 16] = b"pwm.pinput.v1\0\0\0";
 /// Domain tag for a weight Merkle leaf.
 pub const TAG_WLEAF: &[u8; 16] = b"pwm.wleaf.v1\0\0\0\0";
 /// Domain tag for a weight Merkle node.
@@ -51,6 +53,20 @@ pub fn commit_tensor(tensor: &Tensor) -> [u8; 32] {
 pub fn claimed_output_commitment(outputs: &[Tensor]) -> [u8; 32] {
     let outputs = outputs.to_vec();
     commit(TAG_OUTPUT, &canonical_bytes(&outputs))
+}
+
+/// Commit the predictor's seeded input buffers in declared order (the public latent
+/// history and action embedding): `commit(TAG_PINPUTS, count ‖ (buf_id ‖ values)*)`.
+/// Binds the inputs a committed predictor statement is about, so a proof cannot be
+/// replayed against different inputs.
+pub fn predictor_inputs_commitment(inputs: &[(u32, Vec<i64>)]) -> [u8; 32] {
+    let mut payload = Vec::new();
+    (inputs.len() as u32).encode(&mut payload);
+    for (id, values) in inputs {
+        id.encode(&mut payload);
+        values.encode(&mut payload);
+    }
+    commit(TAG_PINPUTS, &payload)
 }
 
 /// The weight Merkle root (`blake2s_merkle_v1`, RFC-0014 §3): leaves are

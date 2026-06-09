@@ -378,7 +378,9 @@ pub fn prove_rollout(inputs, manifest, weights)  -> Result<AuditArtifact, ProveE
 pub fn prove_planning(inputs, manifest, weights) -> Result<AuditArtifact, ProveError>;   // P2
 
 // pwm-verifier  (no_std)
-pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError>;
+pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError>;            // P0 feed-forward
+pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError>; // full predictor (RELATION_PREDICTOR)
+pub fn verify_block(block, weights, tables, inputs) -> Result<Vec<i64>, VerifyError>; // standalone block audit (no commitments)
 
 pub struct AuditArtifact {
     pub artifact_version: u32,

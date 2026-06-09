@@ -20,16 +20,18 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pwm_core::block::{block_transcript, Block, BlockOp};
+use pwm_core::block::{block_architecture_commitment, block_transcript, Block, BlockOp};
 use pwm_core::predictor::{gate_vec, matmul, modulate_vec, residual_add, softmax_rows};
 use pwm_core::tensor::Tensor;
 
 use pwm_core::audit::{
-    audit_transcript, next_freivalds_r, output_tensor, relation_id, AuditArtifact, PlanningProof,
-    RolloutProof, RELATION_MLP, RELATION_VERSION, SERIALIZATION_VERSION,
+    audit_transcript, next_freivalds_r, output_tensor, predictor_transcript, relation_id,
+    AuditArtifact, PlanningProof, PredictorArtifact, RolloutProof, ARTIFACT_VERSION, RELATION_MLP,
+    RELATION_PREDICTOR, RELATION_VERSION, SERIALIZATION_VERSION,
 };
 use pwm_core::commit::{
-    claimed_output_commitment, weights_root, ModelBinding, PlannerBinding, QuantBinding,
+    claimed_output_commitment, predictor_inputs_commitment, weights_root, ModelBinding,
+    PlannerBinding, QuantBinding,
 };
 use pwm_core::field::Fp61;
 use pwm_core::fixed_point::{requantize, valid_shift, OverflowPolicy, Rounding};
@@ -616,7 +618,20 @@ pub fn verify_block(
     inputs: &[(u32, Vec<i64>)],
 ) -> Result<Vec<i64>, VerifyError> {
     let mut transcript = block_transcript(block, inputs);
-    let transcript = &mut transcript;
+    audit_block(block, weights, tables, inputs, &mut transcript)
+}
+
+/// The shared block-walk audit, parameterized by a caller-built Fiat-Shamir
+/// transcript: the standalone [`block_transcript`] for [`verify_block`], or the
+/// commitment-bound [`predictor_transcript`] for [`verify_predictor`]. Private so
+/// the transcript binding cannot be supplied incorrectly from outside the crate.
+fn audit_block(
+    block: &Block,
+    weights: &[Tensor],
+    tables: &[pwm_core::tables::ActivationTable],
+    inputs: &[(u32, Vec<i64>)],
+    transcript: &mut Transcript,
+) -> Result<Vec<i64>, VerifyError> {
     let mut bufs: BTreeMap<u32, Vec<i64>> = BTreeMap::new();
     for (id, v) in inputs {
         bufs.insert(*id, v.clone());
@@ -963,6 +978,102 @@ pub fn verify_block(
         }
     }
     get(&bufs, block.output_buf)
+}
+
+/// Verify a commitment-bound predictor proof (`RELATION_PREDICTOR`): the
+/// first-class, commitment-wrapped counterpart of [`verify_block`].
+///
+/// Unlike a bare `verify_block` (which audits arithmetic against caller-supplied
+/// weights), this recomputes the model commitment (block architecture + weight
+/// root), the quantization commitment (scales + tables), the seeded-input
+/// commitment, and the claimed-output commitment, and checks each against the public
+/// input — so accepting the proof means the *committed* model ran on the *committed*
+/// inputs. The Fiat-Shamir transcript is the commitment-bound [`predictor_transcript`]
+/// (public input + block witness), built internally, so the challenge is
+/// statement-bound and non-adaptive.
+pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError> {
+    let pi = &artifact.public_input;
+
+    // 1. Version + relation gating.
+    if artifact.artifact_version != ARTIFACT_VERSION {
+        return Err(VerifyError::UnsupportedArtifactVersion(
+            artifact.artifact_version,
+        ));
+    }
+    if pi.relation_id != relation_id(RELATION_PREDICTOR) {
+        return Err(VerifyError::UnsupportedRelation);
+    }
+    if pi.statement_type != StatementType::P0Step {
+        return Err(VerifyError::RelationMismatch);
+    }
+
+    // 2. Recompute and check the bound commitments.
+    let model_commitment = ModelBinding {
+        architecture_commitment: block_architecture_commitment(&artifact.block),
+        weights_root: weights_root(&artifact.weights),
+        relation_version: RELATION_VERSION,
+        serialization_version: SERIALIZATION_VERSION,
+    }
+    .commitment();
+    if model_commitment != pi.model_commitment {
+        return Err(VerifyError::CommitmentMismatch("model"));
+    }
+    let quantization_commitment = QuantBinding {
+        default_rounding: Rounding::NearestTiesToEven,
+        overflow_policy: OverflowPolicy::Reject,
+        scales: artifact.scales.clone(),
+        activation_tables_commitment: activation_tables_commitment(&artifact.tables),
+    }
+    .commitment();
+    if quantization_commitment != pi.quantization_commitment {
+        return Err(VerifyError::CommitmentMismatch("quantization"));
+    }
+    let planner_config_commitment = PlannerBinding {
+        horizon: 0,
+        action_block: 0,
+        candidate_count: 0,
+        tie_break_rule_id: 0,
+    }
+    .commitment();
+    if planner_config_commitment != pi.planner_config_commitment {
+        return Err(VerifyError::CommitmentMismatch("planner"));
+    }
+    if pi.latent_history_commitment != Some(predictor_inputs_commitment(&artifact.inputs)) {
+        return Err(VerifyError::CommitmentMismatch("inputs"));
+    }
+
+    // 3. Audit the block under the commitment-bound transcript (binds the public
+    //    input and the block witness before any challenge is squeezed).
+    let mut transcript = predictor_transcript(pi, &artifact.block, &artifact.inputs);
+    let computed = audit_block(
+        &artifact.block,
+        &artifact.weights,
+        &artifact.tables,
+        &artifact.inputs,
+        &mut transcript,
+    )?;
+
+    // 4. The computed output must equal the claimed output, and its commitment must
+    //    match the public input.
+    if artifact.claimed_output.data().len() != computed.len() {
+        return Err(VerifyError::OutputMismatch);
+    }
+    for (cell, &v) in artifact.claimed_output.data().iter().zip(computed.iter()) {
+        if cell.value() != v {
+            return Err(VerifyError::OutputMismatch);
+        }
+    }
+    let rebuilt = output_tensor(
+        artifact.claimed_output.tensor_id(),
+        artifact.claimed_output.scale_id(),
+        &computed,
+    )
+    .map_err(|_| VerifyError::Encoding)?;
+    if claimed_output_commitment(core::slice::from_ref(&rebuilt)) != pi.claimed_output_commitment {
+        return Err(VerifyError::OutputCommitmentMismatch);
+    }
+
+    Ok(())
 }
 
 /// Each trace record must match the graph op at the same index by kind, ids, and

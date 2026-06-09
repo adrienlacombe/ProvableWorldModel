@@ -256,14 +256,17 @@ per-tensor activation-scale calibration for float-faithful outputs is a further
 refinement. For P2, all `S` candidate costs must be proven, not only the winner:
 proving only the selected candidate would be unsound.
 
-Binding status, precisely: the P0 feed-forward statement is a commitment-bound
-`AuditArtifact` whose verifier recomputes the model, quantization, and planner
-commitments and checks them against the public input. The full named-buffer
-predictor block is audited *arithmetically* end to end (every projection
-Freivalds-checked, every nonlinear op exactly recomputed, all bound by the block
-Merkle root absorbed into the Fiat-Shamir transcript before any challenge is
-drawn), but is not yet wrapped in that same public commitment envelope; promoting
-it to a first-class commitment-bound predictor relation is the next milestone.
+Binding status, precisely: both the P0 feed-forward statement (`AuditArtifact`) and
+the full named-buffer predictor (`RELATION_PREDICTOR`, `pwm_verifier::verify_predictor`)
+are **commitment-bound**. In each case the verifier recomputes the model commitment
+(architecture + weight Merkle root), the quantization commitment (scales + tables),
+and the input/output commitments, and checks them against the public input, so
+accepting a proof means the *committed* model ran on the *committed* inputs, not just
+some caller-supplied weights. The predictor's Fiat-Shamir transcript binds that public
+input and the committed block witness (the block Merkle root, which commits every
+claimed accumulator) before any challenge is squeezed, so the challenge is
+statement-bound and non-adaptive. A bare `verify_block` still exists for standalone
+arithmetic audits; the committed relation is the one to use for a real statement.
 
 ## Architecture
 

@@ -609,21 +609,14 @@ pub fn block_root(ops: &[BlockOp]) -> [u8; 32] {
 /// Domain string for the named-buffer block Fiat-Shamir transcript.
 pub const BLOCK_TRANSCRIPT_DOMAIN: &[u8] = b"pwm.block.v1";
 
-/// The **canonical** Fiat-Shamir transcript for a named-buffer block (specs.md §5,
-/// §7) — the single source of truth for the block-path challenge binding.
-///
-/// It absorbs the [`block_root`] (which commits **every** op's claimed `out`, since
-/// [`BlockOp`] canonical-encodes its output) and then each seeded input buffer,
-/// *before* any Freivalds challenge is squeezed during the walk. Binding the
-/// outputs first is exactly what makes the lazily-squeezed challenges
-/// non-adaptive: the prover commits all accumulators before any `r` exists.
-///
-/// This MUST be the only construction used by both `prove`/`verify` paths; keeping
-/// it here (not duplicated per call site) prevents the binding from silently
-/// drifting and losing soundness. `verify_block` builds it internally from the
-/// proven block, so callers cannot get it wrong.
-pub fn block_transcript(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
-    let mut t = Transcript::new(BLOCK_TRANSCRIPT_DOMAIN);
+/// Absorb the block **witness** into a transcript: the [`block_root`] (which commits
+/// every op's claimed `out`, since [`BlockOp`] canonical-encodes its output) and then
+/// each seeded input buffer, *before* any Freivalds challenge is squeezed. Binding
+/// the outputs first is what makes the lazily-squeezed challenges non-adaptive: the
+/// prover commits all accumulators before any `r` exists. This is the single source
+/// of truth for the block-path binding, shared by the standalone [`block_transcript`]
+/// and the commitment-bound predictor transcript (`audit::predictor_transcript`).
+pub fn absorb_block_witness(t: &mut Transcript, block: &Block, inputs: &[(u32, Vec<i64>)]) {
     t.absorb(b"block_root", &block_root(&block.ops));
     for (id, v) in inputs {
         t.absorb_u64(b"in_buf", *id as u64);
@@ -633,5 +626,35 @@ pub fn block_transcript(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript
         }
         t.absorb(b"in_vals", &bytes);
     }
+}
+
+/// The **canonical** Fiat-Shamir transcript for a standalone named-buffer block
+/// (specs.md §5, §7): a fresh domain-separated transcript with the block witness
+/// absorbed. `verify_block` builds it internally from the proven block, so callers
+/// cannot get the binding wrong. The commitment-bound predictor relation uses
+/// `audit::predictor_transcript` instead, which also binds the public input.
+pub fn block_transcript(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
+    let mut t = Transcript::new(BLOCK_TRANSCRIPT_DOMAIN);
+    absorb_block_witness(&mut t, block, inputs);
     t
+}
+
+/// The architecture (skeleton) commitment of a block: the [`block_root`] taken over
+/// the ops with their witness outputs cleared, so it binds the static structure
+/// (op kinds, ids, buffer wiring, dims, and quantization params) independent of any
+/// input or claimed output. This is the named-buffer analog of
+/// [`crate::graph::GraphSpec::commitment`] and is the `architecture_commitment` a
+/// predictor model commitment binds; prover and verifier both derive it by clearing
+/// each op's `out`.
+pub fn block_architecture_commitment(block: &Block) -> [u8; 32] {
+    let skeleton: Vec<BlockOp> = block
+        .ops
+        .iter()
+        .map(|op| {
+            let mut o = op.clone();
+            o.set_out(Vec::new());
+            o
+        })
+        .collect();
+    block_root(&skeleton)
 }

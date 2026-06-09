@@ -12,6 +12,7 @@
 
 use alloc::vec::Vec;
 
+use crate::block::{absorb_block_witness, Block};
 use crate::field::Fp61;
 use crate::fixed_point::{BoundError, BoundedInt};
 use crate::graph::GraphSpec;
@@ -28,6 +29,10 @@ pub const ARTIFACT_VERSION: u32 = 1;
 /// Relation id string for the quantized feed-forward statement (the working
 /// vertical slice toward the full predictor relation `pwm.lewm.predictor_step.v1`).
 pub const RELATION_MLP: &str = "pwm.lewm.mlp.v1";
+/// Relation id string for the full named-buffer predictor step (AdaLN-zero,
+/// multi-head attention, GELU FFN, gated residuals over the conditional block DAG).
+/// The commitment-bound counterpart of the standalone block audit (`verify_block`).
+pub const RELATION_PREDICTOR: &str = "pwm.lewm.predictor_step.v1";
 /// Relation semantic version bound into the model commitment.
 pub const RELATION_VERSION: u32 = 1;
 /// Canonical serialization version bound into the model commitment.
@@ -108,6 +113,37 @@ impl CanonicalDecode for AuditArtifact {
     }
 }
 
+/// A commitment-bound proof of one predictor step (`RELATION_PREDICTOR`): the full
+/// named-buffer conditional block, its committed weights/tables/scales, the seeded
+/// (public) input buffers, and the claimed output, all bound by a [`PublicInput`].
+///
+/// Unlike a bare `verify_block` call (which audits arithmetic against
+/// caller-supplied weights), the verifier recomputes the model commitment (the block
+/// architecture + weight root), the quantization commitment (scales + tables), and
+/// the input/output commitments, and checks them against the public input — so the
+/// proof attests the committed model on the committed inputs, not just *some*
+/// weights. See `pwm_verifier::verify_predictor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PredictorArtifact {
+    /// Wire-format version.
+    pub artifact_version: u32,
+    /// The public fields the proof binds (relation id, commitments).
+    pub public_input: PublicInput,
+    /// The proven conditional block (ops with claimed outputs filled).
+    pub block: Block,
+    /// Committed weight/bias tensors; their Merkle root binds the model commitment.
+    pub weights: Vec<Tensor>,
+    /// Committed activation/lookup tables; their commitment binds the quantization.
+    pub tables: Vec<ActivationTable>,
+    /// The scale table (bound by the quantization commitment).
+    pub scales: Vec<Scale>,
+    /// The seeded input buffers (public, in declared order); bound by the input
+    /// commitment and absorbed into the transcript.
+    pub inputs: Vec<(u32, Vec<i64>)>,
+    /// The claimed predictor output; its commitment must equal the public input's.
+    pub claimed_output: Tensor,
+}
+
 /// A fixed-candidate planning proof (P2 = V0): a P0 [`AuditArtifact`] per
 /// candidate over the same committed model, the public goal latent, the per-
 /// candidate goal costs, and the selected candidate. The verifier checks each
@@ -157,6 +193,23 @@ pub struct RolloutProof {
 pub fn audit_transcript(public_input: &PublicInput, trace_root: &[u8; 32]) -> Transcript {
     let mut t = init_transcript(public_input);
     t.absorb(b"trace_root", trace_root);
+    t
+}
+
+/// The commitment-bound Fiat-Shamir transcript for a predictor proof: the public
+/// input (which binds the relation id and the model / quantization / input / output
+/// commitments) followed by the block witness (`block_root` and the seeded inputs),
+/// all absorbed before any Freivalds challenge is squeezed. Reuses
+/// [`absorb_block_witness`] so the witness binding cannot drift from the standalone
+/// `block_transcript`. The prover never builds this; the verifier derives it from
+/// the committed artifact, so the challenge is non-adaptive and statement-bound.
+pub fn predictor_transcript(
+    public_input: &PublicInput,
+    block: &Block,
+    inputs: &[(u32, Vec<i64>)],
+) -> Transcript {
+    let mut t = init_transcript(public_input);
+    absorb_block_witness(&mut t, block, inputs);
     t
 }
 
