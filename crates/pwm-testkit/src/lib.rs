@@ -22,6 +22,7 @@
 //! surfaces; components plug their own types in as they land.
 
 pub mod accept_reject;
+pub mod bundle;
 pub mod demo;
 pub mod golden;
 pub mod lewm;

@@ -20,7 +20,8 @@ use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::Tensor;
 use pwm_prover::prove_block;
 use pwm_verifier::{verify_block, VerifyError};
-use serde_json::Value;
+
+use crate::bundle::{self, BundleError};
 
 const CLO: i64 = -128;
 const CHI: i64 = 127;
@@ -563,44 +564,43 @@ pub struct RealPredictor {
     pub input_source: String,
 }
 
-/// Parse a full predictor export bundle.
-pub fn load_real_predictor(json: &str) -> RealPredictor {
-    let v: Value = serde_json::from_str(json).expect("predictor bundle json");
-    let g = |k: &str| v["dims"][k].as_u64().expect("dim") as usize;
+/// Parse a full predictor export bundle, or a [`BundleError`] describing what was
+/// malformed (so the CLI can report it cleanly instead of panicking).
+pub fn load_real_predictor(json: &str) -> Result<RealPredictor, BundleError> {
+    let v = bundle::parse(json)?;
+    let dv = bundle::field(&v, "dims")?;
     let dims = Dims {
-        d: g("d"),
-        s: g("s"),
-        h: g("h"),
-        dh: g("dh"),
-        mlp: g("mlp"),
-        depth: g("depth"),
+        d: bundle::u64_at(dv, "d")? as usize,
+        s: bundle::u64_at(dv, "s")? as usize,
+        h: bundle::u64_at(dv, "h")? as usize,
+        dh: bundle::u64_at(dv, "dh")? as usize,
+        mlp: bundle::u64_at(dv, "mlp")? as usize,
+        depth: bundle::u64_at(dv, "depth")? as usize,
     };
-    let ints = |val: &Value| -> Vec<i64> {
-        val.as_array()
-            .expect("array")
-            .iter()
-            .map(|x| x.as_i64().expect("int"))
-            .collect()
-    };
-    let blocks = v["blocks"]
+    let blocks = bundle::field(&v, "blocks")?
         .as_array()
-        .expect("blocks")
+        .ok_or(BundleError::WrongType {
+            field: "blocks",
+            expected: "an array",
+        })?
         .iter()
-        .map(|bk| RealBlock {
-            qkv: ints(&bk["qkv"]),
-            out: ints(&bk["out"]),
-            fc1: ints(&bk["fc1"]),
-            fc2: ints(&bk["fc2"]),
-            adaln: ints(&bk["adaln"]),
+        .map(|bk| {
+            Ok(RealBlock {
+                qkv: bundle::ints_at(bk, "qkv")?,
+                out: bundle::ints_at(bk, "out")?,
+                fc1: bundle::ints_at(bk, "fc1")?,
+                fc2: bundle::ints_at(bk, "fc2")?,
+                adaln: bundle::ints_at(bk, "adaln")?,
+            })
         })
-        .collect();
-    RealPredictor {
+        .collect::<Result<Vec<_>, BundleError>>()?;
+    Ok(RealPredictor {
         dims,
         blocks,
-        x: ints(&v["x"]),
-        c: ints(&v["c"]),
-        input_source: v["input_source"].as_str().unwrap_or("").to_string(),
-    }
+        x: bundle::ints_at(&v, "x")?,
+        c: bundle::ints_at(&v, "c")?,
+        input_source: bundle::str_at_or(&v, "input_source", ""),
+    })
 }
 
 #[cfg(test)]

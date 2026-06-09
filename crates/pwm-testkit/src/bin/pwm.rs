@@ -491,7 +491,10 @@ fn main() {
                 eprintln!("read {path} failed: {e}");
                 exit(1);
             });
-            let bundle = lewm::load_bundle(&bundle_json);
+            let bundle = lewm::load_bundle(&bundle_json).unwrap_or_else(|e| {
+                eprintln!("bad bundle {path}: {e}");
+                exit(1);
+            });
             let t0 = Instant::now();
             let artifact = lewm::prove(&bundle);
             let infer = t0.elapsed();
@@ -579,7 +582,10 @@ fn main() {
                     eprintln!("read {path} failed: {e}");
                     exit(1);
                 });
-                lewm_predictor::load_real_predictor(&j)
+                lewm_predictor::load_real_predictor(&j).unwrap_or_else(|e| {
+                    eprintln!("bad bundle {path}: {e}");
+                    exit(1);
+                })
             });
             let is_real = real.is_some();
             let label = if is_real {
