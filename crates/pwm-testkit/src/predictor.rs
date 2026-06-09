@@ -317,6 +317,9 @@ mod tests {
     fn predictor_proves_and_verifies() {
         let (proof, next) = prove();
         assert_eq!(next.len(), SEQ * DIM);
+        // Pin the predicted next latent (deterministic from the committed weights,
+        // tables, and inputs): an is_ok() smoke test would miss silent kernel drift.
+        assert_eq!(&next[(SEQ - 1) * DIM..], &[3905, 1802]);
         assert!(verify(&proof).is_ok());
     }
 
