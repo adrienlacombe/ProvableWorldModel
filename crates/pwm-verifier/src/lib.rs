@@ -27,14 +27,14 @@ use pwm_core::tensor::Tensor;
 use pwm_core::audit::{
     audit_transcript, next_freivalds_r, output_tensor, predictor_transcript, relation_id,
     AuditArtifact, PlanningProof, PredictorArtifact, RolloutProof, ARTIFACT_VERSION, RELATION_MLP,
-    RELATION_PREDICTOR, RELATION_VERSION, SERIALIZATION_VERSION,
+    RELATION_PREDICTOR,
 };
 use pwm_core::commit::{
     claimed_output_commitment, predictor_inputs_commitment, weights_root, ModelBinding,
     PlannerBinding, QuantBinding,
 };
 use pwm_core::field::Fp61;
-use pwm_core::fixed_point::{requantize, valid_shift, OverflowPolicy, Rounding};
+use pwm_core::fixed_point::{requantize, valid_shift, Rounding};
 use pwm_core::freivalds::{
     check_linear_biased, dims_within_soundness_margin, precompute_v, within_operand_bound,
 };
@@ -344,38 +344,22 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
     }
 
     // 2. Recompute and check the bound commitments.
-    let architecture_commitment = artifact.graph.commitment();
-    let w_root = weights_root(&artifact.weights);
-    let model_commitment = ModelBinding {
-        architecture_commitment,
-        weights_root: w_root,
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
-    .commitment();
+    let model_commitment =
+        ModelBinding::v0(artifact.graph.commitment(), weights_root(&artifact.weights)).commitment();
     if model_commitment != pi.model_commitment {
         return Err(VerifyError::CommitmentMismatch("model"));
     }
 
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: artifact.scales.clone(),
-        activation_tables_commitment: activation_tables_commitment(&artifact.tables),
-    }
+    let quantization_commitment = QuantBinding::v0(
+        artifact.scales.clone(),
+        activation_tables_commitment(&artifact.tables),
+    )
     .commitment();
     if quantization_commitment != pi.quantization_commitment {
         return Err(VerifyError::CommitmentMismatch("quantization"));
     }
 
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
-    if planner_config_commitment != pi.planner_config_commitment {
+    if PlannerBinding::p0_sentinel().commitment() != pi.planner_config_commitment {
         return Err(VerifyError::CommitmentMismatch("planner"));
     }
 
@@ -1008,34 +992,23 @@ pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError>
     }
 
     // 2. Recompute and check the bound commitments.
-    let model_commitment = ModelBinding {
-        architecture_commitment: block_architecture_commitment(&artifact.block),
-        weights_root: weights_root(&artifact.weights),
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
+    let model_commitment = ModelBinding::v0(
+        block_architecture_commitment(&artifact.block),
+        weights_root(&artifact.weights),
+    )
     .commitment();
     if model_commitment != pi.model_commitment {
         return Err(VerifyError::CommitmentMismatch("model"));
     }
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: artifact.scales.clone(),
-        activation_tables_commitment: activation_tables_commitment(&artifact.tables),
-    }
+    let quantization_commitment = QuantBinding::v0(
+        artifact.scales.clone(),
+        activation_tables_commitment(&artifact.tables),
+    )
     .commitment();
     if quantization_commitment != pi.quantization_commitment {
         return Err(VerifyError::CommitmentMismatch("quantization"));
     }
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
-    if planner_config_commitment != pi.planner_config_commitment {
+    if PlannerBinding::p0_sentinel().commitment() != pi.planner_config_commitment {
         return Err(VerifyError::CommitmentMismatch("planner"));
     }
     if pi.latent_history_commitment != Some(predictor_inputs_commitment(&artifact.inputs)) {

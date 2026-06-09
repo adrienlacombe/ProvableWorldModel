@@ -13,7 +13,7 @@
 
 use alloc::vec::Vec;
 
-use crate::fixed_point::{requantize, Rounding};
+use crate::fixed_point::{requantize, BoundedInt, Rounding};
 use crate::tables::ActivationTable;
 
 /// Round-to-nearest integer division by a positive divisor `n` (ties away from
@@ -25,6 +25,35 @@ pub fn round_div(a: i64, n: i64) -> i64 {
     } else {
         -((-a + n / 2) / n)
     }
+}
+
+/// Exact integer dense linear `out[r] = bias[r] + Σ_c W[r·cols + c] · x[c]` over a
+/// committed int8 weight matrix `W` (row-major, shape `(rows, cols)`).
+///
+/// This is the single prover/reference forward kernel for a fixed-weight linear;
+/// the verifier audits the same relation with a Freivalds check
+/// ([`crate::freivalds::check_linear_biased`]) instead of recomputing it. `bias` has
+/// length `rows` (pass an all-zero slice for no bias). Sharing this one definition
+/// across the reference model and both prover linear ops keeps them from drifting.
+pub fn linear(
+    weight: &[BoundedInt],
+    x: &[i64],
+    bias: &[i64],
+    rows: usize,
+    cols: usize,
+) -> Vec<i64> {
+    debug_assert_eq!(weight.len(), rows * cols);
+    debug_assert_eq!(x.len(), cols);
+    debug_assert_eq!(bias.len(), rows);
+    (0..rows)
+        .map(|r| {
+            let base = r * cols;
+            bias[r]
+                + (0..cols)
+                    .map(|c| weight[base + c].value() * x[c])
+                    .sum::<i64>()
+        })
+        .collect()
 }
 
 /// AdaLN-zero modulation, per channel: `out = requant(x · (one + scale)) + shift`

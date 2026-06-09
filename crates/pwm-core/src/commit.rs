@@ -140,6 +140,19 @@ impl CanonicalEncode for ModelBinding {
 }
 
 impl ModelBinding {
+    /// The V0 model binding for a given architecture sub-commitment and weight root,
+    /// pinning the V0 relation and serialization versions the prover and verifier
+    /// must agree on. The single constructor both sides call, so a version bump
+    /// changes one place instead of drifting across call sites.
+    pub fn v0(architecture_commitment: [u8; 32], weights_root: [u8; 32]) -> Self {
+        ModelBinding {
+            architecture_commitment,
+            weights_root,
+            relation_version: crate::audit::RELATION_VERSION,
+            serialization_version: crate::audit::SERIALIZATION_VERSION,
+        }
+    }
+
     /// `commit(TAG_MODEL, canonical_bytes(self))`.
     pub fn commitment(&self) -> [u8; 32] {
         commit(TAG_MODEL, &canonical_bytes(self))
@@ -170,6 +183,18 @@ impl CanonicalEncode for QuantBinding {
 }
 
 impl QuantBinding {
+    /// The V0 quantization binding: round-nearest-ties-even and overflow=reject (the
+    /// only V0 policies), for the given scale table and committed-tables commitment.
+    /// Pins the two policy fields so they cannot diverge between prover and verifier.
+    pub fn v0(scales: Vec<Scale>, activation_tables_commitment: [u8; 32]) -> Self {
+        QuantBinding {
+            default_rounding: Rounding::NearestTiesToEven,
+            overflow_policy: OverflowPolicy::Reject,
+            scales,
+            activation_tables_commitment,
+        }
+    }
+
     /// `commit(TAG_QUANT, canonical_bytes(self))`.
     pub fn commitment(&self) -> [u8; 32] {
         commit(TAG_QUANT, &canonical_bytes(self))
@@ -200,6 +225,17 @@ impl CanonicalEncode for PlannerBinding {
 }
 
 impl PlannerBinding {
+    /// The P0/V0 planner sentinel: an all-zero config (no planner). The single
+    /// definition of the "no planner" binding the P0 prover and verifier both bind.
+    pub fn p0_sentinel() -> Self {
+        PlannerBinding {
+            horizon: 0,
+            action_block: 0,
+            candidate_count: 0,
+            tie_break_rule_id: 0,
+        }
+    }
+
     /// `commit(TAG_PLANNER, canonical_bytes(self))`.
     pub fn commitment(&self) -> [u8; 32] {
         commit(TAG_PLANNER, &canonical_bytes(self))

@@ -14,8 +14,7 @@
 
 use pwm_core::audit::{
     output_tensor, relation_id, AuditArtifact, OutputTensorError, PlanningProof, PredictorArtifact,
-    RolloutProof, ARTIFACT_VERSION, RELATION_MLP, RELATION_PREDICTOR, RELATION_VERSION,
-    SERIALIZATION_VERSION,
+    RolloutProof, ARTIFACT_VERSION, RELATION_MLP, RELATION_PREDICTOR,
 };
 use pwm_core::block::{block_architecture_commitment, Block, BlockOp};
 use pwm_core::commit::{
@@ -23,7 +22,7 @@ use pwm_core::commit::{
     PlannerBinding, QuantBinding,
 };
 use pwm_core::field::{try_encode, OutOfRange};
-use pwm_core::fixed_point::{requantize, OverflowPolicy, Rounding};
+use pwm_core::fixed_point::{requantize, Rounding};
 use pwm_core::planning::{argmin, mse_cost};
 use pwm_core::predictor::{gate_vec, layernorm, matmul, modulate_vec, residual_add, softmax_rows};
 use pwm_core::public_input::PublicInput;
@@ -66,32 +65,15 @@ pub fn prove_feedforward(
     let run = model.run(input).map_err(ProveError::Reference)?;
 
     // 2. Commitments (all via pwm-core, so the verifier recomputes identically).
-    let architecture_commitment = run.graph.commitment();
     let weights = model.weight_tensors();
-    let w_root = weights_root(&weights);
-    let model_commitment = ModelBinding {
-        architecture_commitment,
-        weights_root: w_root,
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
+    let model_commitment =
+        ModelBinding::v0(run.graph.commitment(), weights_root(&weights)).commitment();
+    let quantization_commitment = QuantBinding::v0(
+        model.scales.clone(),
+        activation_tables_commitment(&model.tables),
+    )
     .commitment();
-
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: model.scales.clone(),
-        activation_tables_commitment: activation_tables_commitment(&model.tables),
-    }
-    .commitment();
-
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
+    let planner_config_commitment = PlannerBinding::p0_sentinel().commitment();
 
     // 3. Claimed output tensor + commitment.
     let claimed_output = output_tensor(out_binding.tensor_id, out_binding.scale_id, &run.output)
@@ -679,27 +661,14 @@ pub fn prove_predictor(
         )))?;
 
     // 3. Commitments (all via pwm-core, so the verifier recomputes identically).
-    let model_commitment = ModelBinding {
-        architecture_commitment: block_architecture_commitment(&proven),
-        weights_root: weights_root(weights),
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
+    let model_commitment = ModelBinding::v0(
+        block_architecture_commitment(&proven),
+        weights_root(weights),
+    )
     .commitment();
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: scales.to_vec(),
-        activation_tables_commitment: activation_tables_commitment(tables),
-    }
-    .commitment();
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
+    let quantization_commitment =
+        QuantBinding::v0(scales.to_vec(), activation_tables_commitment(tables)).commitment();
+    let planner_config_commitment = PlannerBinding::p0_sentinel().commitment();
     let input_commitment = predictor_inputs_commitment(inputs);
 
     // 4. Claimed output tensor + commitment.
