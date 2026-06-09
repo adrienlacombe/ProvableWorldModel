@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Tests for the observability schema, redaction guard, required-field policy,
-//! metric set, and span scaffolding.
+//! metric set, and span scaffolding. Gated on the default `obs` feature (the
+//! schema it exercises is excluded from the no_std verifier trust root).
+#![cfg(feature = "obs")]
 
 use std::collections::BTreeMap;
 
