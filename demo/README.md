@@ -20,29 +20,38 @@ Pure Rust, offline, weights are synthetic.
 
 ```
 ProvableWorldModel  commit-and-audit over the le-wm world model
-  pipeline   checkpoint -> quantize -> commit -> encode -> run -> prove -> verify
+  pipeline   checkpoint -> quantize -> commit -> encode -> infer -> prove -> verify
 
-[stage 1/4] EXPORT  offline, trusted
+[stage 1/5] LOAD  the committed quantized world model
   ├ model    le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)
   ├ config   dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
-  ├ weights  30 tensors, 10,764,288 int8 params
-  ├ inputs   z_history [3x192], action embedding [3x192]
-  └ source   synthetic quantized latents
+  ├ tensors  30 int8 weight matrices, 4 committed table(s)
+  │          per block: qkv[3072x192] out[192x1024] fc1[2048x192] fc2[192x2048] adaln[1152x192]
+  ├ params   10,764,288 int8 weights  (10.27 MiB on the wire, 1 byte each)
+  ├ commit   weights_root 227e79e5...   model 3ab3d1f6...
+  ├ inputs   z_history [3x192], action [3x192]  synthetic quantized latents
+  └          z[..6] [-2, -1, 0, 1, 2, -2]   action[..6] [-1, 0, 1, -1, 0, 1]
 
-[stage 2/4] PROVE  exact integer inference + commitment
+[stage 2/5] INFER  exact integer forward pass (the world model runs)
   ├ graph    2,437 ops over the named-buffer block DAG
-  │          per block: AdaLN-zero, 16-head attention, GELU FFN, gated residuals
-  ├ infer    exact integer forward pass in 131 ms
-  └ z_next   [-2, -1, 0, 1, 2, -2]  (predicted next-latent head)
+  ├ ops      1,389 slice · 373 concat · 234 requant · 192 matmul · 96 softmax · 75 layernorm · 30 batched-linear · ...
+  ├ compute  32.40 M multiply-accumulates, exact integer  (no float, no GPU)
+  ├ latency  forward pass in 49.0 ms  (49.7 Kop/s, 661 MMAC/s)
+  └ z_next   [-2, -1, 0, 1, 2, -2]  (predicted next-latent head, from the real forward pass)
 
-[stage 3/4] VERIFY  no_std, float-free
-  ├ challenge replayed the Fiat-Shamir transcript, derived the Freivalds r
-  ├ checks   Freivalds v·x == r·z on every projection
-  │          exact recompute of attention, softmax, GELU, LayerNorm, residuals
-  └ verdict  ACCEPT  in 39 ms
+[stage 3/5] COMMIT  bind the execution to a Fiat-Shamir transcript
+  ├ witness  689,760 claimed op outputs (5.26 MiB)  trace_root 56bc38fc...
+  └ bind     absorbed model + inputs + trace, then squeezed the Freivalds r (non-adaptive)
 
-[stage 4/4] TAMPER  forge one matmul output
+[stage 4/5] VERIFY  no_std, float-free, never re-runs the model
+  ├ challenge derived the Freivalds r for 30 linear projections
+  ├ checks   Freivalds v·x == r·z  (soundness ≤ 1/p, p = 2⁶¹−1; union over the checks ~2⁻⁴⁴)
+  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; audits arithmetic only)
+
+[stage 5/5] TAMPER  forge one matmul output
   └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
+
+metrics  infer 49.0 ms · verify 28.6 ms · 10.27 MiB int8 model · 32.40 M MAC · 2,437 ops · ACCEPT
 ```
 
 ## 2. The real pretrained checkpoint (real weights)
@@ -61,30 +70,42 @@ the action encoder**, quantizes the full 192-dim V0 subgraph, and proves the
 predictor on the real weights and the real inputs. Heavy: it pulls a PyTorch image
 and downloads a ~70 MB checkpoint the first time.
 
-```
-[export] checkpoint  quentinll/lewm-pusht (Hugging Face, MIT)
-[export] quantize    34 linears -> 11,705,856 int8 params (power-of-two scales)
-[encode] real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
+Stage 1/2, the **export service** (PyTorch), loads the real checkpoint and logs it:
 
-[stage 1/4] EXPORT  offline, trusted
+```
+ProvableWorldModel  export the real le-wm checkpoint into the prover
+  pipeline   load -> extract V0 -> fold BN -> quantize int8 -> commit -> encode inputs -> bundle
+
+[LOAD]      checkpoint  quentinll/lewm-pusht  (weights.pt, 70.0 MiB, Hugging Face MIT)
+            state_dict  loaded; float32 params extracted in 0.4 s
+[EXTRACT]   action_encoder -> predictor x6 -> pred_proj   (latent=192, depth=6, heads=16, mlp=2048)
+[QUANTIZE]  34 matrices -> 11,705,856 int8 params   (float32 44.7 MiB -> int8 11.2 MiB, 4.0x smaller)
+[COMMIT]    model_commitment / quantization_commitment / graph_commitment  (Blake2s-256)
+[ENCODE]    real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action
+```
+
+Stage 2/2, the **prover** (pure Rust), runs the exact-integer inference on those
+real weights and the no_std verifier audits it (abridged):
+
+```
+[stage 1/5] LOAD  the committed quantized world model
   ├ model    le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights
   ├ source   quentinll/lewm-pusht (Hugging Face, MIT), int8-quantized V0 subgraph
-  ├ config   dim=192, history=3, heads=16, dim_head=64, mlp=2048, depth=6
-  ├ weights  30 tensors, 10,764,288 int8 params
-  ├ inputs   z_history [3x192], action embedding [3x192]
-  └ source   real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action + agent state
+  ├ params   10,764,288 int8 weights  (10.27 MiB on the wire, 1 byte each)
+  └ inputs   real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action
 
-[stage 2/4] PROVE  exact integer inference + commitment
-  ├ graph    2,437 ops over the named-buffer block DAG
-  │          per block: AdaLN-zero, 16-head attention, GELU FFN, gated residuals
-  ├ infer    exact integer forward pass in 130 ms
-  └ z_next   [11, 55, 32, -73, -57, 13]  (predicted next-latent head)
+[stage 2/5] INFER  exact integer forward pass (the world model runs)
+  ├ compute  32.40 M multiply-accumulates, exact integer  (no float, no GPU)
+  ├ latency  forward pass in 49.0 ms  (49.7 Kop/s, 661 MMAC/s)
+  └ z_next   [11, 55, 32, -73, -57, 13]  (predicted next-latent head, from the real forward pass)
 
-[stage 3/4] VERIFY  no_std, float-free
-  └ verdict  ACCEPT  in 38 ms
+[stage 4/5] VERIFY  no_std, float-free, never re-runs the model
+  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; audits arithmetic only)
 
-[stage 4/4] TAMPER  forge one matmul output
+[stage 5/5] TAMPER  forge one matmul output
   └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
+
+metrics  infer 49.0 ms · verify 28.6 ms · 10.27 MiB int8 model · 32.40 M MAC · 2,437 ops · ACCEPT
 ```
 
 This is fully end to end: a **real PushT expert episode** (consistent observation

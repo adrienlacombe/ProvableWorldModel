@@ -27,6 +27,7 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +38,33 @@ from pwm_export import export, fold, quantize
 
 DIM, HEADS, DIM_HEAD, MLP, DEPTH, HIST = 192, 16, 64, 2048, 6, 3
 INNER = HEADS * DIM_HEAD  # 1024
+
+
+# --- observability helpers (a clear staged log; respects NO_COLOR) ---
+def _c(code: str, s: str) -> str:
+    return s if os.environ.get("NO_COLOR") is not None else f"\x1b[{code}m{s}\x1b[0m"
+
+
+def _ms(dt: float) -> str:
+    return f"{dt * 1000:.0f} ms" if dt < 1.0 else f"{dt:.2f} s"
+
+
+def _human_bytes(n: int) -> str:
+    x = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if x < 1024.0 or unit == "GiB":
+            return f"{int(x)} B" if unit == "B" else f"{x:.1f} {unit}"
+        x /= 1024.0
+    return f"{n} B"
+
+
+def stage(name: str, sub: str = "") -> None:
+    head = _c("35;1", f"[{name}]")
+    print(f"\n{head}  {_c('2', sub)}" if sub else f"\n{head}")
+
+
+def log(label: str, text: str) -> None:
+    print(f"  {_c('2', '└')} {label:10} {text}")
 
 
 def load_state_dict() -> dict:
@@ -104,12 +132,38 @@ def gelu_int8_table() -> dict:
 
 
 def main() -> None:
+    t_start = time.perf_counter()
     out_path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/lewm_v0_export.json"
+    pred_path = sys.argv[2] if len(sys.argv) > 2 else "/tmp/lewm_predictor.json"
+
+    print(_c("36;1", "ProvableWorldModel  export the real le-wm checkpoint into the prover"))
+    print(_c("2", "  pipeline   load -> extract V0 -> fold BN -> quantize int8 -> commit -> encode inputs -> bundle"))
+
+    # --- LOAD: the pretrained checkpoint (real torch state_dict). ---
+    ckpt = os.environ.get("LEWM_WEIGHTS", "weights.pt")
+    t = time.perf_counter()
     sd = load_state_dict()
+    t_load = time.perf_counter() - t
+    n_tensors = len(sd)
+    float_params = sum(int(np.prod(v.shape)) for v in sd.values())
+    ckpt_size = Path(ckpt).stat().st_size if Path(ckpt).exists() else 0
+    stage("LOAD", "the pretrained checkpoint")
+    log("checkpoint", f"quentinll/lewm-pusht  ({Path(ckpt).name}, {_human_bytes(ckpt_size)}, Hugging Face MIT)")
+    log("state_dict", f"{n_tensors} tensors, {float_params:,} params (float32) loaded in {_ms(t_load)}")
+
+    # --- EXTRACT: the V0 proven subgraph. ---
     assert_dims(sd)
     linears = v0_linears(sd)
+    stage("EXTRACT", "the V0 proven subgraph")
+    log("subgraph", "action_encoder -> predictor x6 -> pred_proj")
+    log("config", f"latent={DIM}, history={HIST}, depth={DEPTH}, heads={HEADS}, dim_head={DIM_HEAD}, mlp={MLP}")
+    log("per block",
+        f"to_qkv[{3 * INNER}x{DIM}] to_out[{DIM}x{INNER}] mlp.fc1[{MLP}x{DIM}] "
+        f"mlp.fc2[{DIM}x{MLP}] adaLN[{6 * DIM}x{DIM}]")
+    log("fold", "pred_proj BatchNorm1d folded into the preceding Linear")
 
-    # Full V0 quantization + committed manifest.
+    # --- QUANTIZE every linear to int8 + build the committed manifest. ---
+    t = time.perf_counter()
     ops, weights, scales = [], [], []
     for idx, (name, w) in enumerate(sorted(linears.items())):
         tensor, scale = quantize_to_dict(name, w, idx)
@@ -119,16 +173,20 @@ def main() -> None:
                     "bias_id": None, "rows": w.shape[0], "cols": w.shape[1]})
     tables = [gelu_int8_table()]
     manifest = export.build_manifest(ops, weights, tables, scales)
-    total = sum(len(t["data"]) for t in weights)
-    print("[export] checkpoint  quentinll/lewm-pusht (Hugging Face, MIT)")
-    print(f"[export] config      latent_dim={DIM}, history={HIST}, depth={DEPTH}, heads={HEADS}, "
-          f"dim_head={DIM_HEAD}, mlp_dim={MLP}")
-    print(f"[export] quantize    {len(linears)} linears -> {total:,} int8 params (power-of-two scales)")
-    print("[export] commitments (Blake2s-256):")
-    for k, v in manifest.items():
-        print(f"  {k:24} = {v[:24]}...")
+    t_quant = time.perf_counter() - t
+    int8_params = sum(len(t_["data"]) for t_ in weights)
+    log2s = [s["log2"] for s in scales]
+    stage("QUANTIZE", "every linear to int8 with per-tensor power-of-two scales")
+    log("linears", f"{len(linears)} matrices -> {int8_params:,} int8 params in {_ms(t_quant)}")
+    log("compression",
+        f"float32 {_human_bytes(int8_params * 4)} -> int8 {_human_bytes(int8_params)} (4.0x smaller)")
+    log("scales", f"per-tensor log2 in [{min(log2s)}, {max(log2s)}]")
 
-    # --- Rust prover bundle: the real pred_proj head on a real latent. ---
+    stage("COMMIT", "Blake2s-256 over the canonical manifest")
+    for k, v in manifest.items():
+        log(k, f"{v[:32]}...")
+
+    # --- pred_proj head bundle: the real BN-folded head on a real latent. ---
     # pred_proj = Linear(192->2048, BN-folded) -> GELU -> Linear(2048->192).
     rng = np.random.default_rng(0)
     z = rng.standard_normal(DIM)  # a stand-in latent; any latent works (proof is weight-agnostic).
@@ -159,10 +217,7 @@ def main() -> None:
         "fc1_shift": fc1_shift,
         "fc2_shift": fc2_shift,
     }
-    print(f"calibrated requant shifts: fc1={fc1_shift}, fc2={fc2_shift}")
     Path(out_path).write_text(json.dumps(bundle))
-    print(f"\nwrote pred_proj bundle ({Path(out_path).stat().st_size} bytes) to {out_path}")
-    print("verify it: cargo run -p pwm-testkit --bin pwm --release -- prove-lewm " + out_path)
 
     # --- Full predictor bundle: the real 6-block, 16-head attention predictor. ---
     def q8(w: np.ndarray) -> list:
@@ -177,11 +232,14 @@ def main() -> None:
             "fc2": q8(sd[f"{p}.mlp.net.4.weight"]),
             "adaln": q8(sd[f"{p}.adaLN_modulation.1.weight"]),
         })
+
+    # --- ENCODE the model inputs (latent history + action). ---
     # Inputs, in order of preference:
     #   LEWM_LEROBOT=1  consistent real (observation, action) from a lerobot/pusht
     #                   expert episode: real frames -> encoder, real 2D action+state.
     #   LEWM_GIF=<path> real observation frames (encoder) + a stand-in action.
     #   otherwise       synthetic latents.
+    t = time.perf_counter()
     gif = os.environ.get("LEWM_GIF")
     if os.environ.get("LEWM_LEROBOT"):
         from pwm_export import encode, lerobot_pusht
@@ -194,21 +252,20 @@ def main() -> None:
         c_q = quantize.quantize_array(act_emb.flatten())[0]
         input_source = (f"real PushT expert episode (lerobot/pusht): {n} frames @ frameskip 5 "
                         f"-> ViT encoder; real 2D action + agent state")
-        print(f"[encode] {input_source}")
     elif gif and Path(gif).exists():
         from pwm_export import encode
         tsd = torch.load(os.environ.get("LEWM_WEIGHTS", "weights.pt"),
                          map_location="cpu", weights_only=True)
-        emb, act_emb, total = encode.encode_history(tsd, gif, HIST, action_dim=10)
+        emb, act_emb, n_frames = encode.encode_history(tsd, gif, HIST, action_dim=10)
         x_q = quantize.quantize_array(emb.flatten())[0]
         c_q = quantize.quantize_array(act_emb.flatten())[0]
         input_source = (f"real PushT observation: {HIST} frames from {Path(gif).name} "
-                        f"({total} total) -> ViT encoder -> projector (action is a stand-in)")
-        print(f"[encode] {input_source}")
+                        f"({n_frames} total) -> ViT encoder -> projector (action is a stand-in)")
     else:
         x_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
         c_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
         input_source = "synthetic quantized latents (set LEWM_LEROBOT=1 for real obs+action)"
+    t_encode = time.perf_counter() - t
     pred_bundle = {
         "model": "lewm-pusht full predictor (6 blocks, 16 heads), real quantized weights",
         "input_source": input_source,
@@ -217,10 +274,23 @@ def main() -> None:
         "c": c_q,
         "blocks": blocks,
     }
-    pred_path = sys.argv[2] if len(sys.argv) > 2 else "/tmp/lewm_predictor.json"
     Path(pred_path).write_text(json.dumps(pred_bundle))
-    print(f"wrote predictor bundle ({Path(pred_path).stat().st_size} bytes) to {pred_path}")
-    print("verify it: cargo run -p pwm-testkit --bin pwm --release -- prove-predictor " + pred_path)
+
+    stage("ENCODE", "the model inputs (latent history + action)")
+    log("source", input_source)
+    log("z_history", f"[{HIST}x{DIM}] -> int8 ({len(x_q)} values)")
+    log("action", f"[{HIST}x{DIM}] -> int8 ({len(c_q)} values)  in {_ms(t_encode)}")
+
+    # --- BUNDLE the prover-ingestible artifacts. ---
+    stage("BUNDLE", "the prover-ingestible artifacts")
+    log("pred_proj", f"head bundle  {_human_bytes(Path(out_path).stat().st_size)} -> {out_path}")
+    log("predictor", f"full bundle  {_human_bytes(Path(pred_path).stat().st_size)} -> {pred_path}")
+    log("calib", f"requant shifts fc1={fc1_shift}, fc2={fc2_shift}")
+    log("prove", f"pwm prove-predictor {pred_path}")
+
+    print(_c("32;1",
+             f"\nreal le-wm checkpoint exported, quantized, and committed in "
+             f"{_ms(time.perf_counter() - t_start)}; ready to prove."))
 
 
 if __name__ == "__main__":
