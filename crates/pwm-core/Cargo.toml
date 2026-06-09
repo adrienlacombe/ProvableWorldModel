@@ -8,6 +8,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["proof-system", "world-model", "commit-and-audit", "no-std", "cryptography"]
+categories = ["cryptography", "no-std", "mathematics"]
 
 [features]
 # `obs` gates the observability *schema* (the LogRecord / MetricSample types and

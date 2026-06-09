@@ -685,8 +685,10 @@ mod tests {
         });
     }
 
-    // The real le-wm V0 dims (192/3/16/64/2048, depth 6). Heavy (~2k ops, large
-    // matmuls), so it is ignored by default; run with `--ignored`.
+    // The real le-wm V0 dims (192/3/16/64/2048, depth 6, ~2.4k ops). Heavy in a
+    // debug build, so it is `#[ignore]`d for the default `cargo test`; the CI test
+    // job runs it in release via `cargo test --release -- --ignored` (~0.1 s there),
+    // so the headline "the full 192-dim predictor verifies" claim is gated.
     #[test]
     #[ignore]
     fn real_v0_dims_full_predictor_verifies() {

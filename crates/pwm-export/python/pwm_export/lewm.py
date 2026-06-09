@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .ingest import V0Dims, V0_DIMS
+from .ingest import V0_DIMS, V0Dims
 
 
 def conditional_block_linears(dims: V0Dims, i: int) -> dict[str, tuple[int, int]]:

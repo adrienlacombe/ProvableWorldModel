@@ -65,7 +65,7 @@ jobs:
       - name: Changelog completeness (INV-REL-10)
         run: python3 ci/check-changelog.py "${{ steps.version.outputs.version }}"
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
           components: rustfmt, clippy

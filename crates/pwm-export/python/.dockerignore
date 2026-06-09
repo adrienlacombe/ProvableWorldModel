@@ -1,0 +1,19 @@
+# Keep the export image build context minimal and reproducible: the Dockerfile
+# does `COPY . /app`, so exclude local caches, virtualenvs, and any downloaded
+# checkpoints/weights that must never be baked into the image.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# Downloaded model assets (the export downloads these at run time, not build time).
+*.pt
+*.bin
+*.ckpt
+*.safetensors
+*.gif
+*.mp4
