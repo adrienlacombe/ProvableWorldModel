@@ -58,7 +58,7 @@ pub fn dims_within_soundness_margin(cols: usize) -> bool {
 /// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an i64 slice. Trace records
 /// store activation/accumulator vectors uniformly as `i64`, so this is the
 /// general dot used by the verifier's Freivalds checks.
-pub fn dot_fp_i64(coeffs: &[Fp61], vals: &[i64]) -> Fp61 {
+pub(crate) fn dot_fp_i64(coeffs: &[Fp61], vals: &[i64]) -> Fp61 {
     debug_assert_eq!(coeffs.len(), vals.len());
     let mut acc = Fp61::ZERO;
     for (&c, &z) in coeffs.iter().zip(vals.iter()) {

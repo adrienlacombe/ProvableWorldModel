@@ -914,7 +914,10 @@ fn main() {
                 exit(1);
             });
             let t0 = Instant::now();
-            let artifact = lewm::prove(&bundle);
+            let artifact = lewm::prove(&bundle).unwrap_or_else(|e| {
+                eprintln!("prove {path} failed: {e:?}");
+                exit(1);
+            });
             let infer = t0.elapsed();
             let bytes = canonical_bytes(&artifact).len();
             let out: Vec<i64> = artifact
@@ -926,7 +929,10 @@ fn main() {
             let tv = Instant::now();
             let accepted = verify_artifact(&artifact).is_ok();
             let vtime = tv.elapsed();
-            let mut forged = lewm::prove(&bundle);
+            let mut forged = lewm::prove(&bundle).unwrap_or_else(|e| {
+                eprintln!("prove {path} failed: {e:?}");
+                exit(1);
+            });
             let forged_op = demo::tamper_accumulator(&mut forged);
             let reject = verify_artifact(&forged).err().map(|e| format!("{e:?}"));
             if json {

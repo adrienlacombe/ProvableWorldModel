@@ -17,7 +17,7 @@ use pwm_core::fixed_point::{BoundedInt, Rounding};
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::{Dtype, Scale, Tensor};
 use pwm_export::reference::{LayerSpec, Model};
-use pwm_prover::{prove_feedforward, OutputBinding};
+use pwm_prover::{prove_feedforward, OutputBinding, ProveError};
 
 use crate::bundle::{self, BundleError};
 
@@ -135,7 +135,12 @@ pub fn load_bundle(json: &str) -> Result<LewmBundle, BundleError> {
 }
 
 /// Run the prover over the bundle's `pred_proj` head and the real input latent.
-pub fn prove(bundle: &LewmBundle) -> AuditArtifact {
+///
+/// # Errors
+/// Returns [`ProveError`] if the reference inference fails or an input value lies
+/// outside the M31 representable range `[-2^30, 2^30-1]` (a malformed bundle can
+/// carry such values, since the loader does not range-check the raw input data).
+pub fn prove(bundle: &LewmBundle) -> Result<AuditArtifact, ProveError> {
     prove_feedforward(
         &bundle.model,
         &bundle.input,
@@ -144,7 +149,6 @@ pub fn prove(bundle: &LewmBundle) -> AuditArtifact {
             scale_id: 1,
         },
     )
-    .expect("prove lewm pred_proj head")
 }
 
 #[cfg(test)]
@@ -172,7 +176,7 @@ mod tests {
     fn loads_and_proves_pred_proj_bundle() {
         let bundle = load_bundle(&tiny_bundle()).expect("valid bundle");
         assert_eq!(bundle.dim, 2);
-        assert!(verify(&prove(&bundle)).is_ok());
+        assert!(verify(&prove(&bundle).expect("prove pred_proj")).is_ok());
     }
 
     #[test]
@@ -190,7 +194,7 @@ mod tests {
     #[test]
     fn tampered_pred_proj_is_rejected() {
         let bundle = load_bundle(&tiny_bundle()).expect("valid bundle");
-        let mut a = prove(&bundle);
+        let mut a = prove(&bundle).expect("prove pred_proj");
         let op = tamper_accumulator(&mut a).expect("a linear op");
         assert!(matches!(
             verify(&a),
