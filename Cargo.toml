@@ -49,6 +49,19 @@ rust_2018_idioms = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
+# A curated, cast-noise-free slice of pedantic/style lints that lock in the
+# codebase's existing quality without the churn a blanket `pedantic` would add
+# (60+ intentional integer-cast warnings, plus `use_self` flipping ~260 sites that
+# already consistently spell out the type name). The lints kept here are concrete
+# readability wins (literal separators, no-op closures, `&container` loops,
+# `map_or`); the format-arg and trailing-semicolon lints are already clean and are
+# pinned purely to prevent regressions.
+uninlined_format_args = "warn"
+redundant_closure_for_method_calls = "warn"
+map_unwrap_or = "warn"
+explicit_iter_loop = "warn"
+unreadable_literal = "warn"
+semicolon_if_nothing_returned = "warn"
 
 # Build profiles. The performance-budget profile is tuned under the perf gate
 # (#75); these are conservative defaults appropriate for a prover binary.

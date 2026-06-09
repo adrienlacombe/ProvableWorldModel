@@ -111,7 +111,12 @@ fn golden_vector_regression() {
     use pwm_core::serialize::canonical_bytes;
     use pwm_core::transcript::blake2s256;
     let a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
-    let out: Vec<i64> = a.claimed_output.data().iter().map(|c| c.value()).collect();
+    let out: Vec<i64> = a
+        .claimed_output
+        .data()
+        .iter()
+        .map(pwm_core::BoundedInt::value)
+        .collect();
     assert_eq!(out, vec![4, -1], "golden output");
     let digest = blake2s256(&canonical_bytes(&a));
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
@@ -201,7 +206,7 @@ fn accept_valid_proof() {
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect::<Vec<_>>(),
         vec![4, -1]
     );

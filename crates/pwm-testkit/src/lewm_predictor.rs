@@ -401,7 +401,7 @@ fn attn(b: &mut Builder, x: u32, d: Dims, w: BlockWeights) -> u32 {
     // Reassemble [s, inner] = per position, concat the heads' [dh] slices.
     let mut parts = Vec::with_capacity(d.s * d.h);
     for p in 0..d.s {
-        for oh in head_outs.iter() {
+        for oh in &head_outs {
             parts.push(b.slice(*oh, p * d.dh, d.dh));
         }
     }
@@ -538,7 +538,7 @@ pub fn verify(
 
 /// Forge the first attention/FFN projection output; the Freivalds check rejects it.
 pub fn tamper(proven: &mut Block) -> Option<u32> {
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::BatchedLinear { op_id, out, .. } = op {
             if let Some(first) = out.first_mut() {
                 *first += 1;

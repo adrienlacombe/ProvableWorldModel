@@ -48,8 +48,8 @@ fn tables() -> Vec<ActivationTable> {
     ]
 }
 
-const CLO: i64 = -100000;
-const CHI: i64 = 100000;
+const CLO: i64 = -100_000;
+const CHI: i64 = 100_000;
 
 /// The structural block (op `out` fields are placeholders, filled by prove_block).
 fn block_spec() -> Block {
@@ -149,7 +149,7 @@ fn accept_adaln_gated_ffn_block() {
 fn reject_tampered_block_linear() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the fc1 linear output (op_id 7) -> Freivalds rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::Linear { op_id: 7, out, .. } = op {
             out[0] += 1;
         }
@@ -235,7 +235,7 @@ fn reject_tampered_attention_scores() {
     let mut proven =
         prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
     // Tamper the QKᵀ scores (op_id 1) -> exact matmul recompute rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::MatMul { op_id: 1, out, .. } = op {
             out[0] += 1;
         }
@@ -469,7 +469,7 @@ fn reject_tampered_encoder_projection() {
 fn reject_tampered_block_residual() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the residual add output (op_id 11) -> exact recompute rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::Add { op_id: 11, out, .. } = op {
             out[0] += 5;
         }

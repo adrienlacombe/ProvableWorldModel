@@ -85,7 +85,7 @@ fn modp_accumulator_rejected() -> bool {
 /// the trace record to perturb (the requant or the activation).
 fn tampered_op_rejected(select: fn(&OpRecord) -> bool) -> bool {
     let mut art = prove_demo();
-    for rec in art.trace.iter_mut() {
+    for rec in &mut art.trace {
         if select(rec) {
             match rec {
                 OpRecord::Requant(r) => r.output[0] += 1,

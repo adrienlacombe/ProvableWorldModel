@@ -452,7 +452,7 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         if output.len() != proof.goal.len() {
             return Err(VerifyError::CostMismatch { index });
@@ -543,7 +543,7 @@ pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError>
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         if output.len() != proof.goal.len()
             || mse_cost(&output, &proof.goal) != Some(proof.costs[index])
@@ -598,7 +598,7 @@ pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         if next != proof.trajectory[step] {
             return Err(VerifyError::RolloutWiring { step });
@@ -687,7 +687,7 @@ fn audit_block(
                     Some(bid) => find_weight(*bid)?
                         .data()
                         .iter()
-                        .map(|c| c.value())
+                        .map(pwm_core::BoundedInt::value)
                         .collect(),
                     None => alloc::vec![0i64; rows],
                 };
@@ -964,7 +964,7 @@ fn audit_block(
                     Some(bid) => find_weight(*bid)?
                         .data()
                         .iter()
-                        .map(|c| c.value())
+                        .map(pwm_core::BoundedInt::value)
                         .collect(),
                     None => alloc::vec![0i64; rows],
                 };
@@ -1180,7 +1180,7 @@ fn check_linear(
             let b = artifact
                 .weight(id)
                 .ok_or(VerifyError::MissingBinding("bias"))?;
-            b.data().iter().map(|c| c.value()).collect()
+            b.data().iter().map(pwm_core::BoundedInt::value).collect()
         }
         None => alloc::vec![0i64; rows],
     };

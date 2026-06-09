@@ -105,11 +105,11 @@ fn property_random_bounded_ops_stay_in_bounds_and_encode() {
     // Deterministic LCG (no RNG dependency) over small ranges so products stay in
     // M31_SIGNED; assert each result's value lies in its propagated bounds and
     // that the centered encoding round-trips.
-    let mut state: u64 = 0x9E3779B97F4A7C15;
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
     let mut next = || {
         state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (state >> 33) as i64
     };
     let pick = |n: i64, lim: i64| (n % (2 * lim + 1)) - lim;

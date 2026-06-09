@@ -41,7 +41,7 @@ pub fn quantize_nonlinearity<F: Fn(f64) -> f64>(
 /// `0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))`.
 pub fn gelu(x: f64) -> f64 {
     const C: f64 = 0.797_884_560_802_865_4; // sqrt(2/pi)
-    0.5 * x * (1.0 + (C * (x + 0.044715 * x * x * x)).tanh())
+    0.5 * x * (1.0 + (C * (x + 0.044_715 * x * x * x)).tanh())
 }
 
 /// SiLU / swish: `x · sigmoid(x) = x / (1 + e^{-x})`.
@@ -61,7 +61,7 @@ pub fn silu_table(table_id: u32, lo: i64, hi: i64, in_frac: u32, out_frac: u32) 
 
 /// Generate the softmax exp table `e^x` over `[lo, 0]` (inputs are score − max ≤ 0).
 pub fn exp_table(table_id: u32, lo: i64, in_frac: u32, out_frac: u32) -> ActivationTable {
-    quantize_nonlinearity(table_id, lo, 0, in_frac, out_frac, |x| x.exp())
+    quantize_nonlinearity(table_id, lo, 0, in_frac, out_frac, f64::exp)
 }
 
 /// Generate the inverse-sqrt table `1/√x` over `[1, hi]` (variance ≥ 1; the

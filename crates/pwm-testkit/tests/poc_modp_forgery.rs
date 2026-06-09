@@ -27,7 +27,7 @@ fn forge_modp() -> (Result<(), VerifyError>, Vec<i64>, Vec<i64>) {
         .claimed_output
         .data()
         .iter()
-        .map(|c| c.value())
+        .map(pwm_core::BoundedInt::value)
         .collect();
     assert!(verify(&art).is_ok(), "honest proof must verify");
 

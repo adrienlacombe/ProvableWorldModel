@@ -26,6 +26,14 @@ entry.
   Fiat-Shamir transcript, the `freivalds` check, and the `trace` model; the
   pre-pivot spec corpus is archived under `docs/legacy-stark/`. See
   [roadmap.md](roadmap.md), [specs.md](specs.md), [backlog.md](backlog.md).
+- Decomposed the CLI `prove-predictor` command (a ~340-line match arm that
+  interleaved proving and rendering) into a single `PredictorReport` computation
+  plus pure `print_predictor_report_{json,human}` reporters; output is unchanged.
+- Locked in a curated, cast-noise-free slice of clippy style lints in
+  `[workspace.lints.clippy]` (`unreadable_literal`, `redundant_closure_for_method_calls`,
+  `map_unwrap_or`, `explicit_iter_loop`, `uninlined_format_args`,
+  `semicolon_if_nothing_returned`) and applied the resulting idiom fixes, so the
+  gate prevents regressions without the noise a blanket `pedantic` would add.
 
 ### Added
 

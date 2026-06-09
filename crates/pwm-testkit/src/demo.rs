@@ -106,8 +106,8 @@ pub fn secret_challenge(artifact: &AuditArtifact, seed: u64) -> Vec<Vec<Fp61>> {
             for _ in 0..l.output.len() {
                 // SplitMix-style LCG step; reduce the state into the audit field.
                 s = s
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
                 v.push(Fp61::new(s));
             }
             out.push(v);
@@ -121,7 +121,7 @@ pub fn secret_challenge(artifact: &AuditArtifact, seed: u64) -> Vec<Vec<Fp61>> {
 /// committed `z` no longer equals `W*x`, so the Freivalds check `v*x == r*z` fails.
 /// Returns the op id that will be rejected, or `None` if the trace has no linear.
 pub fn tamper_accumulator(artifact: &mut AuditArtifact) -> Option<u32> {
-    for rec in artifact.trace.iter_mut() {
+    for rec in &mut artifact.trace {
         if let OpRecord::Linear(l) = rec {
             if let Some(first) = l.output.first_mut() {
                 *first += 1;
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn verifier_secret_challenge_accepts_honest_proof() {
         let a = prove_demo();
-        let r = secret_challenge(&a, 0x00C0FFEE);
+        let r = secret_challenge(&a, 0x00C0_FFEE);
         // One challenge vector per linear op, lengths matching the rows.
         assert_eq!(r.len(), 2);
         assert!(verify_interactive(&a, &r).is_ok());
@@ -165,7 +165,7 @@ mod tests {
     fn tamper_also_defeats_the_secret_challenge() {
         let mut a = prove_demo();
         tamper_accumulator(&mut a);
-        let r = secret_challenge(&a, 0x00C0FFEE);
+        let r = secret_challenge(&a, 0x00C0_FFEE);
         assert!(verify_interactive(&a, &r).is_err());
     }
 }

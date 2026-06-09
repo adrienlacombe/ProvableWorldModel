@@ -403,7 +403,7 @@ mod tests {
         use pwm_verifier::{verify_predictor, VerifyError as VE};
         let mut art = committed_artifact();
         // Replace fc1 (weight_id 14) without updating the committed model_commitment.
-        for t in art.weights.iter_mut() {
+        for t in &mut art.weights {
             if t.tensor_id() == 14 {
                 *t = w(14, 4, 2, &[2, 0, 0, 1, 1, 1, 1, -1]);
             }
@@ -440,7 +440,7 @@ mod tests {
         use pwm_verifier::{verify_predictor, VerifyError as VE};
         let mut art = committed_artifact();
         let mut forged = None;
-        for op in art.block.ops.iter_mut() {
+        for op in &mut art.block.ops {
             if let BlockOp::BatchedLinear { op_id, out, .. } = op {
                 out[0] += 1;
                 forged = Some(*op_id);
@@ -460,7 +460,7 @@ mod tests {
         use pwm_verifier::{verify_predictor, VerifyError as VE};
         let mut art = committed_artifact();
         let mut forged = None;
-        for op in art.block.ops.iter_mut() {
+        for op in &mut art.block.ops {
             if let BlockOp::BatchedLinear { op_id, out, .. } = op {
                 out[0] += FREIVALDS_P as i64;
                 forged = Some(*op_id);

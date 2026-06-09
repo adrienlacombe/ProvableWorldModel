@@ -157,7 +157,7 @@ pub fn prove_rollout(
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         latents.push(next.clone());
         trajectory.push(next);
@@ -193,7 +193,7 @@ pub fn prove_planning(
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         costs.push(mse_cost(&output, goal).ok_or(PlanError::CostOverflow)?);
         candidates.push(artifact);
@@ -276,7 +276,11 @@ pub fn prove_block(
                 }
                 let wd = w.data();
                 let bias: Vec<i64> = match bias_id {
-                    Some(bid) => weight(bid)?.data().iter().map(|c| c.value()).collect(),
+                    Some(bid) => weight(bid)?
+                        .data()
+                        .iter()
+                        .map(pwm_core::BoundedInt::value)
+                        .collect(),
                     None => vec![0i64; rows],
                 };
                 let out: Vec<i64> = (0..rows)
@@ -595,7 +599,11 @@ pub fn prove_block(
                 }
                 let wd = w.data();
                 let bias: Vec<i64> = match bias_id {
-                    Some(bid) => weight(bid)?.data().iter().map(|c| c.value()).collect(),
+                    Some(bid) => weight(bid)?
+                        .data()
+                        .iter()
+                        .map(pwm_core::BoundedInt::value)
+                        .collect(),
                     None => vec![0i64; rows],
                 };
                 let mut out = Vec::with_capacity(s * rows);
