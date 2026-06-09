@@ -34,6 +34,30 @@ entry.
   `map_unwrap_or`, `explicit_iter_loop`, `uninlined_format_args`,
   `semicolon_if_nothing_returned`) and applied the resulting idiom fixes, so the
   gate prevents regressions without the noise a blanket `pedantic` would add.
+- Replaced stringly-typed rejection sub-discriminants with typed enums:
+  `VerifyError::CommitmentMismatch(CommitmentKind)` and `MissingBinding(BindingKind)`
+  (was `&'static str`), and split `BlockError::MissingBinding` into `MissingWeight`,
+  `MissingTable`, and `InvalidRounding{op_id,discriminant}`. Rejection codes are now
+  compiler-checked and stable for downstream matchers.
+- `pwm-testkit::lewm::prove` returns `Result<AuditArtifact, ProveError>` instead of
+  panicking, so a malformed bundle whose input escapes the M31 range fails cleanly.
+- Routed the predictor block prover's linear ops through the shared
+  `pwm_core::predictor::linear` kernel (was an inlined loop), removing prover /
+  reference / verifier drift; narrowed `pwm_core::freivalds::dot_fp_i64` to
+  `pub(crate)`.
+
+### Fixed
+
+- The soundness mutation campaign registered no mutant for the `tensor_memory`
+  (op-to-op wiring) component, so its merge gate passed vacuously; it now exercises
+  a `WiringMismatch` mutant. The committed `requantize` golden fixture is now run
+  through the real primitive (it was only parsed), and `verify_planning_batched`
+  gained the missing argmin/cost reject tests.
+- Corrected stale documentation: `pwm-export` is consumed by `pwm-prover` and
+  `pwm-testkit` (not a dependency-DAG leaf; the verifier trust root depends on it
+  only as a dev-dependency); the `commit` hash rationale (Blake2s is the transcript
+  sponge, not a vendored-Stwo match); the dependency DAGs in `specs.md`/`README`; and
+  three release-tooling docstrings pointing at the relocated spec path.
 
 ### Added
 

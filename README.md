@@ -312,7 +312,7 @@ Freivalds and trace implementation with the prover through `pwm-core`.
 ```text
 pwm-prover --> pwm-export --> pwm-core <-- pwm-verifier
                                   ^
-                           pwm-testkit
+              pwm-testkit --> (pwm-prover, pwm-verifier, pwm-export, pwm-core)
 ```
 
 The argmin uniqueness check and the Freivalds probability bound are also formally

@@ -350,7 +350,7 @@ ProvableWorldModel/
 ```text
 pwm-prover ──► pwm-export ──► pwm-core ◄── pwm-verifier
      └──────────────────────► pwm-core
-pwm-testkit ──► (pwm-prover, pwm-verifier, pwm-core)
+pwm-testkit ──► (pwm-prover, pwm-verifier, pwm-export, pwm-core)
 ```
 
 - `pwm-core` depends on **no proving substrate** and compiles `no_std` (INV‑ARCH‑01).

@@ -4,7 +4,7 @@
 # SPDX header gate. Fails if any first-party source file lacks the
 # `SPDX-License-Identifier: Apache-2.0` line in its first few lines.
 #
-# Scope (docs/spec/09-release-and-versioning.md, RFC-0015): every first-party
+# Scope (docs/legacy-stark/spec/09-release-and-versioning.md, RFC-0015): every first-party
 # Rust/Python source file and every first-party Cargo manifest, plus the CI
 # shell scripts. Vendored files under `third_party/` retain their upstream
 # license headers and are excluded.

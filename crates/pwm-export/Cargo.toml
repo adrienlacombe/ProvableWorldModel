@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "pwm-export"
-description = "Export/quantize pipeline. The Rust side holds the canonical fixed-point reference inference and the Python<->Rust<->golden parity harness; the Python subpackage extracts the graph and writes the manifest. Nothing depends on pwm-export (INV-ARCH-02)."
+description = "Export/quantize pipeline. The Rust side holds the canonical fixed-point reference inference and the Python<->Rust<->golden parity harness; the Python subpackage extracts the graph and writes the manifest. The verifier trust root does not depend on it (pwm-verifier uses it only as a dev-dependency); pwm-prover and pwm-testkit consume it for the integer reference (INV-ARCH-02)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

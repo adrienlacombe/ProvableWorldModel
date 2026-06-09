@@ -2,9 +2,11 @@
 //! Blake2s commitments for the model, quantization, and planner config, and the
 //! weight Merkle root (RFC-0014 §3).
 //!
-//! V0 fixes one hash primitive (Blake2s-256) for every commitment, matching the
-//! vendored Stwo channel. Each commitment is **domain-separated and
-//! length-prefixed** so a model digest can never collide with a quantization,
+//! V0 fixes one hash primitive (Blake2s-256) for every commitment. Blake2s is the
+//! native sponge of the Fiat-Shamir transcript, so the prover and the `no_std`
+//! verifier share exactly one hash implementation. Each commitment is
+//! **domain-separated and length-prefixed** so a model digest can never collide
+//! with a quantization,
 //! planner, output, or tensor digest. Each commitment binds exactly the fields
 //! the soundness argument requires (`specs.md §13`):
 //! changing any bound field changes the commitment.

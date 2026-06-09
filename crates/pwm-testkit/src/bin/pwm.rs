@@ -670,7 +670,7 @@ fn print_predictor_report_human(r: &PredictorReport) {
         "{} checks   Freivalds {}  {}",
         li(false),
         dim("v\u{00b7}x == r\u{00b7}z"),
-        dim("(soundness \u{2264} 1/p, p = 2\u{2076}\u{00b9}\u{2212}1; union over the checks ~2\u{207b}\u{2074}\u{2074})")
+        dim("(soundness \u{2264} 1/p per check, p = 2\u{2076}\u{00b9}\u{2212}1; union N/p \u{2248} 2\u{207b}\u{2074}\u{2074} at N \u{2248} 10\u{2075} checks)")
     );
     println!(
         "{}          {}",
