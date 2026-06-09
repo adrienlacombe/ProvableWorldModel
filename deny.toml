@@ -23,14 +23,19 @@ confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
 [bans]
-# Conservative defaults; tightened when the dependency inventory lands (#26).
-multiple-versions = "allow"
+# Surface accidental duplicate dependency versions (supply-chain hygiene) without
+# blocking on the long tail of transitive diamonds.
+multiple-versions = "warn"
 
 [advisories]
-# The License/SPDX gate runs `cargo deny check licenses`; advisories are handled
-# by the dependency audit (#26). Keep defaults permissive here.
-yanked = "warn"
+# The supply-chain gate runs `cargo deny check` (advisories + bans + licenses +
+# sources). A yanked crate or a published advisory against any dependency fails the
+# merge gate (fail closed); the small trust-root dependency set (blake2 and its
+# transitive deps) keeps this cheap. Uses the cargo-deny v2 advisories schema, whose
+# defaults treat security vulnerabilities as `deny`.
+version = 2
+yanked = "deny"
 
 [sources]
-unknown-registry = "warn"
-unknown-git = "allow"
+unknown-registry = "deny"
+unknown-git = "deny"

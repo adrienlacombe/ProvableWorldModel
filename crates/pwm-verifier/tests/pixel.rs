@@ -23,12 +23,11 @@
 //! attention scores (exact matmul), or the final norm (exact recompute) is
 //! rejected.
 
-use pwm_core::block::{block_root, Block, BlockOp};
+use pwm_core::block::{Block, BlockOp};
 use pwm_core::fixed_point::BoundedInt;
 use pwm_core::relation::StatementType;
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::Tensor;
-use pwm_core::transcript::Transcript;
 use pwm_prover::prove_block;
 use pwm_verifier::{verify_block, VerifyError};
 
@@ -183,17 +182,6 @@ fn inputs() -> Vec<(u32, Vec<i64>)> {
     ]
 }
 
-fn transcript_for(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
-    let mut t = Transcript::new(b"pwm.block.v1");
-    t.absorb(b"block_root", &block_root(&block.ops));
-    for (id, v) in inputs {
-        t.absorb_u64(b"in_buf", *id as u64);
-        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-        t.absorb(b"in_vals", &bytes);
-    }
-    t
-}
-
 #[test]
 fn p4_relation_id_is_pixel_to_plan() {
     // The encode path proven here is the P4 statement's front half.
@@ -203,8 +191,7 @@ fn p4_relation_id_is_pixel_to_plan() {
 #[test]
 fn accept_pixel_encoder_to_latent() {
     let proven = prove_block(&encoder(), &weights(), &tables(), &inputs()).unwrap();
-    let mut t = transcript_for(&proven, &inputs());
-    let latent = verify_block(&proven, &weights(), &tables(), &inputs(), &mut t).unwrap();
+    let latent = verify_block(&proven, &weights(), &tables(), &inputs()).unwrap();
     // CLS token after both residuals is [1804, 802] (mean 1303); final LayerNorm
     // with unit inverse-std centers it -> [501, -501].
     assert_eq!(latent, vec![501, -501]);
@@ -217,9 +204,8 @@ fn reject_tampered_patch_embedding() {
     if let BlockOp::BatchedLinear { out, .. } = &mut proven.ops[0] {
         out[0] += 1;
     }
-    let mut t = transcript_for(&proven, &inputs());
     assert!(matches!(
-        verify_block(&proven, &weights(), &tables(), &inputs(), &mut t),
+        verify_block(&proven, &weights(), &tables(), &inputs()),
         Err(VerifyError::FreivaldsCheckFailed { op_id: 1 })
     ));
 }
@@ -233,9 +219,8 @@ fn reject_tampered_attention_scores() {
             out[0] += 1;
         }
     }
-    let mut t = transcript_for(&proven, &inputs());
     assert!(matches!(
-        verify_block(&proven, &weights(), &tables(), &inputs(), &mut t),
+        verify_block(&proven, &weights(), &tables(), &inputs()),
         Err(VerifyError::BlockOpMismatch { op_id: 6 })
     ));
 }
@@ -249,9 +234,8 @@ fn reject_tampered_final_norm() {
             out[0] += 7;
         }
     }
-    let mut t = transcript_for(&proven, &inputs());
     assert!(matches!(
-        verify_block(&proven, &weights(), &tables(), &inputs(), &mut t),
+        verify_block(&proven, &weights(), &tables(), &inputs()),
         Err(VerifyError::BlockOpMismatch { op_id: 16 })
     ));
 }

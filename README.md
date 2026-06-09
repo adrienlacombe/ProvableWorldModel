@@ -218,6 +218,15 @@ stays around `2⁻⁴⁴`. The same `W` is reused across every candidate, rollou
 and transformer block, so `v = rᵀW` is computed once per weight matrix and reused
 about `S × horizon` times: that reuse is the whole point.
 
+That `1/p` bound is only the random-challenge escape. The Freivalds equation lives
+in `F_p`, so it proves `z ≡ Wx (mod p)`, not `z = Wx` over the integers, and a
+prover who adds a multiple of `p` to an accumulator passes *every* challenge. So the
+verifier range-checks every input and claimed accumulator to the single-M31
+envelope (`|·| ≤ 2³⁰ − 1`, far above any honest int8 dot product); the honest
+`Wx` and a `±k·p` forgery cannot both fit one length-`p` window, so the forgery is
+rejected. An executed reject test (`+p` on a real accumulator) and a soundness
+mutation gate pin this property.
+
 Mutating any load-bearing value changes a commitment or fails an exact check, and
 the proof is rejected. That covers weights, scales, the rounding mode, tables, op
 order, planner config, public inputs, claimed outputs, and every trace cell.
@@ -232,18 +241,29 @@ order, planner config, public inputs, claimed outputs, and every trace cell.
 | P3 | Full CEM planner (sampling, elites, distribution updates). | deferred |
 | P4 | Pixel to plan, including the ViT encoder. | deferred |
 
-What is implemented and tested today (170 tests): the commit-and-audit protocol
-(Freivalds, exact replay, Merkle commitments, Fiat-Shamir), the full predictor op
-vocabulary (attention, AdaLN, GELU and SiLU tables, LayerNorm, residuals,
-softmax), the rollout recurrence, the MSE cost, and the argmin with tie-break,
-each with accept and reject tests. The exporter ingests the real
-`quentinll/lewm-pusht` checkpoint and quantizes the full 192-dim V0 subgraph, and
-the Rust prover proves and verifies the full 6-block, 16-head, 192-dim predictor
-with the real quantized weights (`pwm prove-predictor`), plus the `pred_proj` head
-on its own (`pwm prove-lewm`). The proof attests the exact integer (quantized)
-relation; per-tensor activation-scale calibration for float-faithful outputs is a
-further refinement. For P2, all `S` candidate costs must be proven, not only the
-winner: proving only the selected candidate would be unsound.
+What is implemented and tested today (175 tests, including an executed mod-`p`
+accumulator forgery that the verifier now rejects and a real soundness mutation
+gate): the commit-and-audit protocol (Freivalds with the accumulator range guard,
+exact replay, Merkle commitments, Fiat-Shamir), the full predictor op vocabulary
+(attention, AdaLN, GELU and SiLU tables, LayerNorm, residuals, softmax), the
+rollout recurrence, the MSE cost, and the argmin with tie-break, each with accept
+and reject tests. The exporter ingests the real `quentinll/lewm-pusht` checkpoint
+and quantizes the full 192-dim V0 subgraph, and the Rust prover proves and
+verifies the full 6-block, 16-head, 192-dim predictor with the real quantized
+weights (`pwm prove-predictor`), plus the `pred_proj` head on its own
+(`pwm prove-lewm`). The proof attests the exact integer (quantized) relation;
+per-tensor activation-scale calibration for float-faithful outputs is a further
+refinement. For P2, all `S` candidate costs must be proven, not only the winner:
+proving only the selected candidate would be unsound.
+
+Binding status, precisely: the P0 feed-forward statement is a commitment-bound
+`AuditArtifact` whose verifier recomputes the model, quantization, and planner
+commitments and checks them against the public input. The full named-buffer
+predictor block is audited *arithmetically* end to end (every projection
+Freivalds-checked, every nonlinear op exactly recomputed, all bound by the block
+Merkle root absorbed into the Fiat-Shamir transcript before any challenge is
+drawn), but is not yet wrapped in that same public commitment envelope; promoting
+it to a first-class commitment-bound predictor relation is the next milestone.
 
 ## Architecture
 

@@ -3,9 +3,10 @@ Copyright 2026 The ProvableWorldModel Authors
 
 This product includes software developed by the ProvableWorldModel Authors.
 
-This product is designed to vendor and build upon third-party software under
-the third_party/ directory. Each vendored component retains its own license
-and copyright notices. See third_party/<component>/LICENSE and the dependency
-inventory in docs/rfcs/RFC-0015-third-party-vendoring-and-pinning.md for the
-authoritative list of vendored components, their upstream sources, pinned
-revisions, and license terms.
+The project has no vendored third-party source. All dependencies are ordinary
+Cargo crates pinned in Cargo.lock; the only cryptographic dependency in the
+verifier trust root is `blake2` (no_std). Each dependency retains its own license
+and copyright; the resolved set is gated by `cargo deny check` against the
+allow-list in deny.toml. The pre-pivot design vendored a proving substrate under
+third_party/, which was removed when the project moved to the CommitLLM
+commit-and-audit backend (see specs.md and roadmap.md).

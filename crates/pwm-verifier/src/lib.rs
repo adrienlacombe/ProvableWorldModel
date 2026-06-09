@@ -20,7 +20,7 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pwm_core::block::{Block, BlockOp};
+use pwm_core::block::{block_transcript, Block, BlockOp};
 use pwm_core::predictor::{gate_vec, matmul, modulate_vec, residual_add, softmax_rows};
 use pwm_core::tensor::Tensor;
 
@@ -32,8 +32,10 @@ use pwm_core::commit::{
     claimed_output_commitment, weights_root, ModelBinding, PlannerBinding, QuantBinding,
 };
 use pwm_core::field::Fp61;
-use pwm_core::fixed_point::{requantize, OverflowPolicy, Rounding};
-use pwm_core::freivalds::{check_linear_biased, precompute_v};
+use pwm_core::fixed_point::{requantize, valid_shift, OverflowPolicy, Rounding};
+use pwm_core::freivalds::{
+    check_linear_biased, dims_within_soundness_margin, precompute_v, within_operand_bound,
+};
 use pwm_core::graph::OpSpec;
 use pwm_core::planning::{mse_cost, verify_argmin};
 use pwm_core::predictor::layernorm;
@@ -73,8 +75,22 @@ pub enum VerifyError {
         /// Op id of the offending linear.
         op_id: u32,
     },
+    /// A Freivalds operand (input, bias, or claimed accumulator) escaped the
+    /// sound integer range `[-SAFE_HI, SAFE_HI]`, so the mod-`p` check could not
+    /// certify integer equality (the accumulator-aliasing guard, specs.md §7 /
+    /// INV-FP-10). Fail-closed: an out-of-envelope accumulator is rejected.
+    AccumulatorRange {
+        /// Op id of the offending linear.
+        op_id: u32,
+    },
     /// An exactly-recomputed op (requant / table) did not match its record.
     ExactReplayMismatch {
+        /// Op id of the offending op.
+        op_id: u32,
+    },
+    /// A proof-supplied right-shift exceeded [`pwm_core::fixed_point::MAX_SHIFT`]
+    /// (would make `1i64 << r` negative or overflow). Fail-closed (WQ-08).
+    InvalidShift {
         /// Op id of the offending op.
         op_id: u32,
     },
@@ -91,10 +107,19 @@ pub enum VerifyError {
     Encoding,
     /// A planning proof had no candidates.
     NoCandidates,
-    /// A candidate's P0 proof failed to verify.
+    /// A candidate's P0 proof failed to verify; `cause` is the inner rejection.
     Candidate {
         /// Candidate index.
         index: usize,
+        /// The underlying P0 rejection (preserved for diagnosis).
+        cause: alloc::boxed::Box<VerifyError>,
+    },
+    /// A rollout step's P0 proof failed to verify; `cause` is the inner rejection.
+    RolloutStep {
+        /// Rollout step index.
+        step: usize,
+        /// The underlying P0 rejection (preserved for diagnosis).
+        cause: alloc::boxed::Box<VerifyError>,
     },
     /// A recomputed candidate cost did not match the claimed cost.
     CostMismatch {
@@ -420,7 +445,10 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
     }
     for (index, candidate) in proof.candidates.iter().enumerate() {
         // 1. Each candidate is a sound P0 proof over the committed model.
-        verify(candidate).map_err(|_| VerifyError::Candidate { index })?;
+        verify(candidate).map_err(|cause| VerifyError::Candidate {
+            index,
+            cause: alloc::boxed::Box::new(cause),
+        })?;
         // 2. Its cost is the exact goal-MSE of its (now verified) output.
         let output: Vec<i64> = candidate
             .claimed_output
@@ -431,7 +459,7 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
         if output.len() != proof.goal.len() {
             return Err(VerifyError::CostMismatch { index });
         }
-        if mse_cost(&output, &proof.goal) != proof.costs[index] {
+        if mse_cost(&output, &proof.goal) != Some(proof.costs[index]) {
             return Err(VerifyError::CostMismatch { index });
         }
     }
@@ -504,14 +532,18 @@ pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError>
             rmap: &rmap,
             vmap: &vmap,
         };
-        verify_with(candidate, &mut ch).map_err(|_| VerifyError::Candidate { index })?;
+        verify_with(candidate, &mut ch).map_err(|cause| VerifyError::Candidate {
+            index,
+            cause: alloc::boxed::Box::new(cause),
+        })?;
         let output: Vec<i64> = candidate
             .claimed_output
             .data()
             .iter()
             .map(|c| c.value())
             .collect();
-        if output.len() != proof.goal.len() || mse_cost(&output, &proof.goal) != proof.costs[index]
+        if output.len() != proof.goal.len()
+            || mse_cost(&output, &proof.goal) != Some(proof.costs[index])
         {
             return Err(VerifyError::CostMismatch { index });
         }
@@ -538,7 +570,10 @@ pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
     let mut latents = proof.initial_latents.clone();
     for (step, artifact) in proof.steps.iter().enumerate() {
         // 1. The step is a sound P0 proof over the committed model.
-        verify(artifact).map_err(|_| VerifyError::Candidate { index: step })?;
+        verify(artifact).map_err(|cause| VerifyError::RolloutStep {
+            step,
+            cause: alloc::boxed::Box::new(cause),
+        })?;
         // 2. Its input is the flattened trailing window of latents at this step.
         let window: Vec<i64> = latents[latents.len() - h..]
             .iter()
@@ -567,16 +602,21 @@ pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
 /// Verify a named-buffer predictor block (specs.md §2.1, §5): replay each
 /// [`BlockOp`] over a buffer map, threading inputs by buffer id — Linear via
 /// Freivalds, the rest by exact integer recompute (LayerNorm / activation tables /
-/// AdaLN modulate / gate / residual add). Returns the block's output buffer. The
-/// `transcript` must already be bound to the block's ops and inputs by the caller;
-/// `weights` and `tables` are the committed bindings.
+/// AdaLN modulate / gate / residual add). Returns the block's output buffer.
+///
+/// The Fiat-Shamir transcript is built **internally** from the proven block and its
+/// inputs via [`block_transcript`], which absorbs the block root (binding every
+/// claimed `out`) before any challenge is squeezed. Building it here, rather than
+/// taking it from the caller, makes the non-adaptive binding impossible to get
+/// wrong. `weights` and `tables` are the committed bindings.
 pub fn verify_block(
     block: &Block,
     weights: &[Tensor],
     tables: &[pwm_core::tables::ActivationTable],
     inputs: &[(u32, Vec<i64>)],
-    transcript: &mut Transcript,
 ) -> Result<Vec<i64>, VerifyError> {
+    let mut transcript = block_transcript(block, inputs);
+    let transcript = &mut transcript;
     let mut bufs: BTreeMap<u32, Vec<i64>> = BTreeMap::new();
     for (id, v) in inputs {
         bufs.insert(*id, v.clone());
@@ -629,6 +669,7 @@ pub fn verify_block(
                         .collect(),
                     None => alloc::vec![0i64; rows],
                 };
+                range_guard_linear(*op_id, cols, &x, &bias, out)?;
                 let r: Vec<Fp61> = next_freivalds_r(transcript, rows);
                 let v = precompute_v(&r, &w_i8, rows, cols);
                 if !check_linear_biased(&v, &x, &bias, &r, out) {
@@ -650,6 +691,9 @@ pub fn verify_block(
                 let x = get(&bufs, *in_buf)?;
                 let mode = Rounding::from_discriminant(*rounding)
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                if !valid_shift(*shift) {
+                    return Err(VerifyError::InvalidShift { op_id: *op_id });
+                }
                 if x.len() != out.len() {
                     return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
                 }
@@ -697,6 +741,9 @@ pub fn verify_block(
                 let table = find_table(*table_id)?;
                 let mode = Rounding::from_discriminant(*rounding)
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
+                if !valid_shift(*shift) {
+                    return Err(VerifyError::InvalidShift { op_id: *op_id });
+                }
                 let expected = layernorm(&x, table, *shift, *clamp_lo, *clamp_hi, mode).ok_or(
                     VerifyError::ActivationDomain {
                         table_id: *table_id,
@@ -727,6 +774,9 @@ pub fn verify_block(
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
                 if scale.len() != x.len() || shift.len() != x.len() {
                     return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                if !valid_shift(*shift_bits) {
+                    return Err(VerifyError::InvalidShift { op_id: *op_id });
                 }
                 let expected = modulate_vec(
                     &x,
@@ -760,6 +810,9 @@ pub fn verify_block(
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
                 if g.len() != x.len() {
                     return Err(VerifyError::BlockOpMismatch { op_id: *op_id });
+                }
+                if !valid_shift(*shift_bits) {
+                    return Err(VerifyError::InvalidShift { op_id: *op_id });
                 }
                 let expected = gate_vec(&g, &x, *shift_bits, *clamp_lo, *clamp_hi, mode);
                 if &expected != out {
@@ -893,6 +946,8 @@ pub fn verify_block(
                         .collect(),
                     None => alloc::vec![0i64; rows],
                 };
+                // Soundness range guard over every row's input and accumulator.
+                range_guard_linear(*op_id, cols, &x, &bias, out)?;
                 // One challenge + one precomputed v, reused across all `seq` rows.
                 let r = next_freivalds_r(transcript, rows);
                 let v = precompute_v(&r, &w_i8s, rows, cols);
@@ -1015,6 +1070,9 @@ fn check_linear(
         }
         None => alloc::vec![0i64; rows],
     };
+    // Soundness range guard (specs.md §7 / INV-FP-10): bound the operands so the
+    // mod-`p` Freivalds check certifies integer equality, not mere congruence.
+    range_guard_linear(rec.op_id, cols, &rec.input, &bias, &rec.output)?;
     if check_linear_biased(v, &rec.input, &bias, r, &rec.output) {
         Ok(())
     } else {
@@ -1022,10 +1080,35 @@ fn check_linear(
     }
 }
 
+/// The Freivalds soundness range guard, emitted as a dedicated [`VerifyError::AccumulatorRange`]
+/// for a clear rejection code. Mirrors the backstop folded into
+/// [`pwm_core::freivalds::check_linear_biased`] so the bound lives in one place
+/// (`pwm-core`) and cannot drift between the trace, block, and batched paths.
+fn range_guard_linear(
+    op_id: u32,
+    cols: usize,
+    x: &[i64],
+    bias: &[i64],
+    out: &[i64],
+) -> Result<(), VerifyError> {
+    if dims_within_soundness_margin(cols)
+        && within_operand_bound(x)
+        && within_operand_bound(bias)
+        && within_operand_bound(out)
+    {
+        Ok(())
+    } else {
+        Err(VerifyError::AccumulatorRange { op_id })
+    }
+}
+
 /// Exactly recompute the requantization and compare to the record (specs.md §8.1).
 fn check_requant(r: &pwm_core::trace::RequantRec) -> Result<(), VerifyError> {
     let mode = Rounding::from_discriminant(r.rounding)
         .ok_or(VerifyError::ExactReplayMismatch { op_id: r.op_id })?;
+    if !valid_shift(r.shift) {
+        return Err(VerifyError::InvalidShift { op_id: r.op_id });
+    }
     if r.input.len() != r.output.len() {
         return Err(VerifyError::ExactReplayMismatch { op_id: r.op_id });
     }
@@ -1049,6 +1132,9 @@ fn check_layernorm(
         .ok_or(VerifyError::MissingBinding("layernorm_table"))?;
     let mode = Rounding::from_discriminant(r.rounding)
         .ok_or(VerifyError::ExactReplayMismatch { op_id: r.op_id })?;
+    if !valid_shift(r.shift) {
+        return Err(VerifyError::InvalidShift { op_id: r.op_id });
+    }
     let expected = layernorm(&r.input, table, r.shift, r.clamp_lo, r.clamp_hi, mode).ok_or(
         VerifyError::ActivationDomain {
             table_id: r.table_id,

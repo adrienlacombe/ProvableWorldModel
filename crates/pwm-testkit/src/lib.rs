@@ -28,3 +28,4 @@ pub mod lewm;
 pub mod lewm_predictor;
 pub mod mutation;
 pub mod predictor;
+pub mod soundness_campaign;

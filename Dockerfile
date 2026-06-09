@@ -14,6 +14,11 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.title="ProvableWorldModel demo (pwm)"
 LABEL org.opencontainers.image.source="https://github.com/AbdelStark/ProvableWorldModel"
 COPY --from=build /src/target/release/pwm /usr/local/bin/pwm
+# Run the demo as an unprivileged user: it reads a proof bundle and prints, and
+# needs no root capabilities. Least privilege by default.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin pwm
+USER pwm
+WORKDIR /home/pwm
 # Default: play the whole demo. docker-compose overrides with prove / audit.
 ENTRYPOINT ["pwm"]
 CMD ["demo"]
