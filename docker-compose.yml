@@ -17,7 +17,10 @@
 # See demo/README.md.
 
 services:
-  # Default: the real predictor architecture at real dims, synthetic weights.
+  # Default: the real predictor architecture at real V0 dims, synthetic weights.
+  # Prints the full staged pipeline (LOAD -> INFER -> COMMIT -> VERIFY -> TAMPER)
+  # with op histogram, MAC count, model size, and prove/verify latency. Fast, no
+  # download. For the REAL pretrained checkpoint use the `real` profile below.
   predictor:
     build: .
     image: pwm-demo:local
