@@ -363,4 +363,111 @@ mod tests {
             Err(VerifyError::AccumulatorRange { op_id }) if op_id == op
         ));
     }
+
+    // --- Commitment-bound predictor relation (PRED-02 / RELATION_PREDICTOR) ---
+
+    fn committed_artifact() -> pwm_core::audit::PredictorArtifact {
+        use pwm_core::tensor::{Dtype, Scale};
+        use pwm_prover::{prove_predictor, OutputBinding};
+        let scales = vec![Scale {
+            scale_id: 0,
+            log2: 0,
+            dtype: Dtype::I8,
+        }];
+        let inputs = input_pairs(&input_values());
+        prove_predictor(
+            &block(),
+            &weights(),
+            &tables(),
+            &scales,
+            &inputs,
+            OutputBinding {
+                tensor_id: 200,
+                scale_id: 0,
+            },
+        )
+        .expect("prove committed predictor")
+    }
+
+    #[test]
+    fn committed_predictor_verifies() {
+        use pwm_verifier::verify_predictor;
+        assert_eq!(verify_predictor(&committed_artifact()), Ok(()));
+    }
+
+    #[test]
+    fn committed_predictor_rejects_swapped_weight() {
+        use pwm_verifier::{verify_predictor, VerifyError as VE};
+        let mut art = committed_artifact();
+        // Replace fc1 (weight_id 14) without updating the committed model_commitment.
+        for t in art.weights.iter_mut() {
+            if t.tensor_id() == 14 {
+                *t = w(14, 4, 2, &[2, 0, 0, 1, 1, 1, 1, -1]);
+            }
+        }
+        assert_eq!(verify_predictor(&art), Err(VE::CommitmentMismatch("model")));
+    }
+
+    #[test]
+    fn committed_predictor_rejects_swapped_table() {
+        use pwm_verifier::{verify_predictor, VerifyError as VE};
+        let mut art = committed_artifact();
+        // Change a committed table without updating quantization_commitment.
+        art.tables[0].outputs[0] += 1;
+        assert_eq!(
+            verify_predictor(&art),
+            Err(VE::CommitmentMismatch("quantization"))
+        );
+    }
+
+    #[test]
+    fn committed_predictor_rejects_swapped_inputs() {
+        use pwm_verifier::{verify_predictor, VerifyError as VE};
+        let mut art = committed_artifact();
+        // Change the seeded inputs without updating the input commitment.
+        art.inputs[0].1[0] += 1;
+        assert_eq!(
+            verify_predictor(&art),
+            Err(VE::CommitmentMismatch("inputs"))
+        );
+    }
+
+    #[test]
+    fn committed_predictor_rejects_tampered_accumulator() {
+        use pwm_verifier::{verify_predictor, VerifyError as VE};
+        let mut art = committed_artifact();
+        let mut forged = None;
+        for op in art.block.ops.iter_mut() {
+            if let BlockOp::BatchedLinear { op_id, out, .. } = op {
+                out[0] += 1;
+                forged = Some(*op_id);
+                break;
+            }
+        }
+        let op = forged.expect("a batched-linear op");
+        assert!(matches!(
+            verify_predictor(&art),
+            Err(VE::FreivaldsCheckFailed { op_id }) if op_id == op
+        ));
+    }
+
+    #[test]
+    fn committed_predictor_rejects_modp_accumulator() {
+        use pwm_core::field::FREIVALDS_P;
+        use pwm_verifier::{verify_predictor, VerifyError as VE};
+        let mut art = committed_artifact();
+        let mut forged = None;
+        for op in art.block.ops.iter_mut() {
+            if let BlockOp::BatchedLinear { op_id, out, .. } = op {
+                out[0] += FREIVALDS_P as i64;
+                forged = Some(*op_id);
+                break;
+            }
+        }
+        let op = forged.expect("a batched-linear op");
+        assert!(matches!(
+            verify_predictor(&art),
+            Err(VE::AccumulatorRange { op_id }) if op_id == op
+        ));
+    }
 }

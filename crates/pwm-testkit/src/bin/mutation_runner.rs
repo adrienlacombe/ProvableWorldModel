@@ -3,8 +3,8 @@
 //!
 //! Runs every registered [`MutationCampaign`](pwm_testkit::mutation::MutationCampaign),
 //! applies the INV-TEST-05 gate, and exits non-zero if the suite is inadequate.
-//! The [`SoundnessCampaign`](pwm_testkit::soundness_campaign::SoundnessCampaign)
-//! exercises the live verifier's soundness checks (range guard, requant/table
+//! The [`SoundnessCampaign`] exercises the live verifier's soundness checks
+//! (range guard, requant/table
 //! replay, argmin) against concrete forgeries; components append further campaigns
 //! as their constraints land.
 
