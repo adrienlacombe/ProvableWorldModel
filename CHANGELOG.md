@@ -32,15 +32,32 @@ entry.
 - Cargo workspace and the first-party crates `pwm-core`, `pwm-export`,
   `pwm-prover`, `pwm-verifier`, `pwm-testkit`; `pwm-verifier` builds `no_std`,
   float-free, and does not depend on `pwm-export` (#23).
+- The commit-and-audit protocol: Blake2s Merkle commitments, the native
+  Fiat-Shamir transcript, the Freivalds linear check, and the exact-recompute
+  trace model (`pwm-core`).
+- The P0 quantized feed-forward statement (`pwm.lewm.mlp.v1`), the P1 rollout, and
+  the P2 fixed-candidate planning proof, with `prove_*`/`verify_*` (`pwm-prover`,
+  `pwm-verifier`).
+- The full named-buffer le-wm predictor (AdaLN-zero, multi-head attention, GELU
+  FFN, gated residuals) as a block DAG, proven by `prove_block` and audited by
+  `verify_block`; the exporter ingests the real `quentinll/lewm-pusht` checkpoint.
+- A first-class **commitment-bound** predictor relation `pwm.lewm.predictor_step.v1`
+  (`RELATION_PREDICTOR`): `prove_predictor` / `verify_predictor` recompute and check
+  the model, quantization, input, and output commitments (PRED-02, #179).
+- The `pwm` demo CLI with a staged, observable pipeline (LOAD → INFER → COMMIT →
+  VERIFY → TAMPER, op histogram, MAC count, latency/throughput), the Docker compose
+  demo (synthetic and `--profile real` paths), and the interactive explainer site.
 - CI merge-gate pipeline: `cargo fmt`, `clippy -D warnings`, tests on MSRV and
   stable, the `no_std` verifier build, the documentation build with an internal
-  link check, the license/SPDX gate, and a constraint-mutation gate (#73, #74).
+  link check, the license/SPDX + supply-chain (`cargo deny check`) gate, and a real
+  constraint-mutation gate (#73, #74).
 - `pwm-core::obs`: the structured-logging schema, the `Level` policy, the
   type-level redaction guard (`LoggableValue`), the named metric set, and the
-  span-tree scaffolding (#66).
+  span-tree scaffolding, behind the off-by-default `obs` feature so the verifier
+  trust root excludes it (#66).
 - `pwm-core::relation::StatementType`, the P0–P4 statement discriminant (#66).
 - `pwm-testkit`: the accept/reject (dual-test) harness, the golden-vector
-  loader, and the constraint-mutation runner skeleton (#77).
+  loader, and a real soundness mutation campaign over the live verifier (#77).
 - `docs/security/soundness-binding-checklist.md`, mapping each binding and
   range-safety requirement to its enforcing RFC, issue, rejection, and test
   (#80).
@@ -48,5 +65,19 @@ entry.
   `CHANGELOG.md`, the changelog/semver lint (`ci/check-changelog.py`), the
   release-preparation helper (`ci/prepare-release.py`), and the tagged release
   workflow (#76).
+
+### Security
+
+- **Freivalds accumulator range guard.** The mod-`p` Freivalds check now rejects
+  any input, bias, or claimed accumulator outside the single-M31 envelope (and any
+  layer too wide for the soundness margin), closing a mod-`p` accumulator-aliasing
+  forgery where a prover could add a multiple of `p` to an accumulator and have the
+  verifier accept an attacker-chosen output. Regression-locked by an executed `+p`
+  reject test and a soundness mutation campaign.
+- **Overflow-safe planning and recompute.** `mse_cost` accumulates in checked
+  `i128` (the 192-dim cost no longer overflows `i64` into a wrapped argmin);
+  requant/rescale shifts are validated before use (`InvalidShift`); and
+  `overflow-checks` is enabled in the release profile so any integer wrap on the
+  recompute path traps instead of silently producing a wrong-but-matching value.
 
 [Unreleased]: https://github.com/AbdelStark/ProvableWorldModel/commits/main

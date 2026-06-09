@@ -96,6 +96,11 @@ pub fn check_linear_biased(v: &[Fp61], x: &[i64], bias: &[i64], r: &[Fp61], out:
 /// `weight` is row-major `W[row * cols + col]`, shape `(rows, cols)`. `r` has
 /// length `rows` (the output dimension); the returned `v` has length `cols` (the
 /// input dimension). Cost `O(rows·cols)`, paid **once** per weight matrix.
+///
+/// # Panics
+///
+/// Panics if `r.len() != rows` or `weight.len() != rows * cols` (a caller-side
+/// shape error, not attacker input).
 pub fn precompute_v(r: &[Fp61], weight: &[i8], rows: usize, cols: usize) -> Vec<Fp61> {
     assert_eq!(r.len(), rows, "r length must equal the output dimension");
     assert_eq!(weight.len(), rows * cols, "weight size must be rows * cols");

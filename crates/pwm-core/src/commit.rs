@@ -6,7 +6,7 @@
 //! vendored Stwo channel. Each commitment is **domain-separated and
 //! length-prefixed** so a model digest can never collide with a quantization,
 //! planner, output, or tensor digest. Each commitment binds exactly the fields
-//! the soundness argument requires (`docs/spec/06-security.md#binding-requirements`):
+//! the soundness argument requires (`specs.md §13`):
 //! changing any bound field changes the commitment.
 
 use alloc::vec::Vec;

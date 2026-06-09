@@ -262,6 +262,12 @@ impl Challenges<'_> {
 
 /// Verify a commit-and-audit proof (non-interactive Fiat-Shamir). Returns `Ok(())`
 /// iff every check passes.
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if any bound commitment, the graph conformance, a
+/// Freivalds range guard or check, an exact recompute, the wiring, or the claimed
+/// output fails; an unsupported relation or version fails closed.
 pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
     let troot = artifact.trace_root();
     let mut ch = Challenges::Fiat(audit_transcript(&artifact.public_input, &troot));
@@ -422,6 +428,12 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
 /// verifies, every cost is the exact goal-MSE of that candidate's verified output,
 /// and the selected candidate is the minimum under smallest-index tie-breaking
 /// (specs.md §10). All candidates are scored — proving only the winner is unsound.
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if there are no candidates, a candidate's P0 proof
+/// fails, a recomputed cost mismatches, or the argmin selection is not the sound
+/// minimum under smallest-index tie-breaking.
 pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
     if proof.candidates.is_empty() {
         return Err(VerifyError::NoCandidates);
@@ -466,6 +478,11 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
 /// bound to *all* candidate trace roots (so they depend on every committed
 /// accumulator). Verdict-equivalent to [`verify_planning`]; only cheaper. Falls
 /// back to per-candidate verification if the candidates do not share a model.
+///
+/// # Errors
+///
+/// Same conditions as [`verify_planning`] (it is verdict-equivalent): no
+/// candidates, a failing candidate proof, a cost mismatch, or an unsound argmin.
 pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError> {
     if proof.candidates.is_empty() {
         return Err(VerifyError::NoCandidates);
@@ -548,6 +565,12 @@ pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError>
 /// trailing `history_size`-window of latents (initial history + previously
 /// predicted latents), and each step's output is the recorded trajectory latent
 /// (specs.md §9).
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if the history window is malformed, a step's P0 proof
+/// fails ([`VerifyError::RolloutStep`]), or the recurrence wiring breaks (a step's
+/// input is not the trailing latent window, or its output is not the recorded one).
 pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
     let h = proof.history_size as usize;
     if h == 0 || proof.initial_latents.len() < h || proof.steps.len() != proof.trajectory.len() {
@@ -975,6 +998,13 @@ fn audit_block(
 /// inputs. The Fiat-Shamir transcript is the commitment-bound [`predictor_transcript`]
 /// (public input + block witness), built internally, so the challenge is
 /// statement-bound and non-adaptive.
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if the relation/version is unsupported, any recomputed
+/// commitment (model, quantization, planner, inputs) mismatches the public input,
+/// a block op fails its Freivalds or exact-recompute audit, or the claimed output
+/// or its commitment does not match.
 pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError> {
     let pi = &artifact.public_input;
 

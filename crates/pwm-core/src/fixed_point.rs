@@ -2,11 +2,11 @@
 //! Bounded-integer reference semantics (RFC-0002 §3–§6).
 //!
 //! Every value in quantized inference carries a declared inclusive range
-//! `[lo, hi]`. The range is not advisory: it is the exact interval the AIR
+//! `[lo, hi]`. The range is not advisory: it is the exact interval the verifier
 //! range-checks, and arithmetic **must never wrap** — `OverflowPolicy::Reject`
 //! is the only V0 policy. This module is the normative *reference*: its
-//! add/sub/mul/compare define the exact integer semantics every `pwm-air`
-//! component must reproduce bit-for-bit (INV-FP-06).
+//! add/sub/mul/compare define the exact integer semantics the prover and the
+//! no_std verifier must reproduce bit-for-bit (INV-FP-06).
 //!
 //! [`BoundedInt`] keeps its fields private and is constructed only through the
 //! checked constructors, so the invariant `lo <= value <= hi` and (for non-limb

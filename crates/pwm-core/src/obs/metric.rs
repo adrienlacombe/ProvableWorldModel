@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The named metric set and the metric sample/snapshot types.
 //!
-//! Metrics are a fixed, named set (`docs/spec/05-observability.md#metrics`).
+//! Metrics are a fixed, named set (`docs/legacy-stark/spec/05-observability.md (archived)`).
 //! Every metric is derived from witness *structure* or public timings/sizes,
 //! never witness *values* (INV-OBS-03); label values are enum labels, component
 //! names, or relation ids, never values. The wiring of real samples on the prove
@@ -50,7 +50,7 @@ pub struct MetricDef {
     pub labels: &'static [&'static str],
 }
 
-/// The complete named metric set (`docs/spec/05-observability.md#named-metric-set`).
+/// The complete named metric set (`docs/legacy-stark/spec/05-observability.md (archived)`).
 /// This is the single source of truth the registry validates samples against.
 pub const METRIC_SET: &[MetricDef] = &[
     MetricDef {
@@ -154,7 +154,7 @@ pub const VERIFY_PHASES: &[&str] = &[
 pub const PROCESSES: &[&str] = &["export", "prover", "verifier"];
 
 /// The wire form of one metric observation
-/// (`docs/spec/05-observability.md#metric-record-type-and-emission`).
+/// (`docs/legacy-stark/spec/05-observability.md (archived)`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricSample {
     /// One of the names in [`METRIC_SET`].
