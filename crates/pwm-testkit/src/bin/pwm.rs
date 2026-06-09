@@ -326,6 +326,424 @@ fn read_proof(path: &str) -> PredictorProof {
     })
 }
 
+/// Everything the `prove-predictor` command computes: the world model is loaded,
+/// run, proven, audited, and tampered exactly once, and every metric the reporters
+/// print is a field here. JSON and human output are then pure projections of this
+/// single computation, with no proving logic interleaved in the rendering.
+struct PredictorReport {
+    label: &'static str,
+    is_real: bool,
+    input_source: String,
+    dims: Dims,
+    /// Per-head inner width times head count (`dims.inner()`), cached for the layout line.
+    inner: usize,
+    weight_tensors: usize,
+    table_count: usize,
+    params: usize,
+    /// On-the-wire model size: int8 weights are one byte per parameter, so this equals `params`.
+    model_bytes: usize,
+    ops: usize,
+    linear_ops: usize,
+    witness_vals: usize,
+    proof_bytes: usize,
+    macs: u128,
+    hist: Vec<(&'static str, usize)>,
+    weights_root: [u8; 32],
+    model_commitment: [u8; 32],
+    trace_root: [u8; 32],
+    infer: std::time::Duration,
+    verify: std::time::Duration,
+    /// Predicted next-latent head (first few entries of the verified output).
+    z_out_head: Vec<i64>,
+    /// First few entries of the quantized latent-history input.
+    z_in_head: Vec<i64>,
+    /// First few entries of the quantized action input.
+    a_in_head: Vec<i64>,
+    /// `None` if the honest proof verified; the rejection reason otherwise.
+    verify_err: Option<String>,
+    /// The op id forged by the tamper pass (`None` only if no linear op existed).
+    forged_op: Option<u32>,
+    /// The verifier's rejection reason for the forged proof (`None` means undetected, a bug).
+    reject: Option<String>,
+}
+
+/// Load (or synthesize) the predictor, run the exact integer forward pass, prove,
+/// audit, and tamper it once, and gather every metric into a [`PredictorReport`].
+/// With a bundle path in `pos[1]` it proves the real 6-block 16-head checkpoint;
+/// without one it proves the real V0 dims over synthetic weights.
+fn build_predictor_report(pos: &[&str]) -> PredictorReport {
+    let real = pos.get(1).map(|path| {
+        let j = fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("read {path} failed: {e}");
+            exit(1);
+        });
+        lewm_predictor::load_real_predictor(&j).unwrap_or_else(|e| {
+            eprintln!("bad bundle {path}: {e}");
+            exit(1);
+        })
+    });
+    let is_real = real.is_some();
+    let label = if is_real {
+        "le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights"
+    } else {
+        "le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)"
+    };
+    let input_source = real
+        .as_ref()
+        .map(|r| r.input_source.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "synthetic quantized latents".to_string());
+    let t0 = Instant::now();
+    let (dims, skeleton, weights, tabs, inputs) = match real {
+        Some(r) => {
+            let (b, w, t, i) = lewm_predictor::build_predictor_real(r.dims, r.blocks, r.x, r.c);
+            (r.dims, b, w, t, i)
+        }
+        None => {
+            let d = Dims {
+                d: 192,
+                s: 3,
+                h: 16,
+                dh: 64,
+                mlp: 2048,
+                depth: 6,
+            };
+            let (b, w, t, i) = lewm_predictor::build_predictor(d);
+            (d, b, w, t, i)
+        }
+    };
+    let params: usize = weights.iter().map(|t| t.data().len()).sum();
+    let proven = lewm_predictor::prove(&skeleton, &weights, &tabs, &inputs);
+    let infer = t0.elapsed();
+    let tv = Instant::now();
+    let res = lewm_predictor::verify(&proven, &weights, &tabs, &inputs);
+    let verify = tv.elapsed();
+    let mut forged = proven.clone();
+    let forged_op = lewm_predictor::tamper(&mut forged);
+    let reject = lewm_predictor::verify(&forged, &weights, &tabs, &inputs)
+        .err()
+        .map(|e| format!("{e:?}"));
+    let out = res.as_ref().ok().cloned().unwrap_or_default();
+
+    // --- MLOps metrics over the proven block ---
+    let hist = op_histogram(&proven.ops);
+    let macs = mac_count(&proven.ops, &weights);
+    let witness_vals: usize = proven.ops.iter().map(|op| op.out().len()).sum();
+    let n_linear = proven
+        .ops
+        .iter()
+        .filter(|o| matches!(o, BlockOp::Linear { .. } | BlockOp::BatchedLinear { .. }))
+        .count();
+    let z_in: &[i64] = inputs.first().map_or(&[], |(_, v)| v.as_slice());
+    let a_in: &[i64] = inputs.get(1).map_or(&[], |(_, v)| v.as_slice());
+    let head = |v: &[i64]| v[..v.len().min(6)].to_vec();
+
+    PredictorReport {
+        label,
+        is_real,
+        input_source,
+        inner: dims.inner(),
+        weight_tensors: weights.len(),
+        table_count: tabs.len(),
+        params,
+        model_bytes: params, // int8 weights: one byte per parameter
+        ops: proven.ops.len(),
+        linear_ops: n_linear,
+        witness_vals,
+        proof_bytes: witness_vals * core::mem::size_of::<i64>(),
+        macs,
+        hist,
+        weights_root: weights_root(&weights),
+        model_commitment: block_architecture_commitment(&proven),
+        trace_root: block_root(&proven.ops),
+        infer,
+        verify,
+        z_out_head: head(&out),
+        z_in_head: head(z_in),
+        a_in_head: head(a_in),
+        verify_err: res.err().map(|e| format!("{e:?}")),
+        forged_op,
+        reject,
+        dims,
+    }
+}
+
+/// Emit the machine-readable predictor report (one JSON object).
+fn print_predictor_report_json(r: &PredictorReport) {
+    println!(
+        "{}",
+        json!({
+            "model": r.label,
+            "real_weights": r.is_real,
+            "input_source": r.input_source,
+            "config": {"dim": r.dims.d, "history": r.dims.s, "heads": r.dims.h,
+                       "dim_head": r.dims.dh, "mlp": r.dims.mlp, "depth": r.dims.depth},
+            "weight_tensors": r.weight_tensors,
+            "int8_params": r.params,
+            "model_bytes": r.model_bytes,
+            "ops": r.ops,
+            "linear_ops": r.linear_ops,
+            "macs": r.macs.to_string(),
+            "op_histogram": r.hist.iter().map(|(k, n)| json!({"op": k, "count": n})).collect::<Vec<_>>(),
+            "weights_root": hex8(&r.weights_root),
+            "model_commitment": hex8(&r.model_commitment),
+            "trace_root": hex8(&r.trace_root),
+            "infer_ms": r.infer.as_secs_f64() * 1000.0,
+            "verify_ms": r.verify.as_secs_f64() * 1000.0,
+            "proof_bytes": r.proof_bytes,
+            "z_out_head": r.z_out_head,
+            "accepted": r.verify_err.is_none(),
+            "tamper": {"forged_op": r.forged_op, "rejected_with": r.reject},
+        })
+    );
+}
+
+/// Render the staged, human-readable predictor pipeline (LOAD -> INFER -> COMMIT
+/// -> VERIFY -> TAMPER). Exits non-zero if the honest proof was rejected or a
+/// forged matmul slipped through, mirroring the demo's fail-closed contract.
+fn print_predictor_report_human(r: &PredictorReport) {
+    let dims = &r.dims;
+    println!(
+        "{}",
+        paint(
+            "36;1",
+            "ProvableWorldModel  commit-and-audit over the le-wm world model"
+        )
+    );
+    println!(
+        "{}",
+        dim("  pipeline   checkpoint -> quantize -> commit -> encode -> infer -> prove -> verify")
+    );
+
+    // --- stage 1: LOAD the committed quantized world model ---
+    stage(1, 5, "LOAD", "the committed quantized world model");
+    println!("{} model    {}", li(false), r.label);
+    if r.is_real {
+        println!(
+            "{} source   quentinll/lewm-pusht {}",
+            li(false),
+            dim("(Hugging Face, MIT), int8-quantized V0 subgraph")
+        );
+    }
+    println!(
+        "{} config   dim={}, history={}, heads={}, dim_head={}, mlp={}, depth={}",
+        li(false),
+        dims.d,
+        dims.s,
+        dims.h,
+        dims.dh,
+        dims.mlp,
+        dims.depth
+    );
+    println!(
+        "{} tensors  {} int8 weight matrices, {} committed table(s)",
+        li(false),
+        r.weight_tensors,
+        r.table_count
+    );
+    println!(
+        "{}          {}",
+        cont(),
+        dim(&format!(
+            "per block: qkv[{}x{}] out[{}x{}] fc1[{}x{}] fc2[{}x{}] adaln[{}x{}]",
+            3 * r.inner,
+            dims.d,
+            dims.d,
+            r.inner,
+            dims.mlp,
+            dims.d,
+            dims.d,
+            dims.mlp,
+            6 * dims.d,
+            dims.d
+        ))
+    );
+    println!(
+        "{} params   {} int8 weights  {}",
+        li(false),
+        commas(r.params),
+        dim(&format!(
+            "({} on the wire, 1 byte each)",
+            bytes_human(r.model_bytes)
+        ))
+    );
+    println!(
+        "{} commit   weights_root {}   model {}",
+        li(false),
+        dim(&hex8(&r.weights_root)),
+        dim(&hex8(&r.model_commitment))
+    );
+    println!(
+        "{} inputs   z_history [{}x{}], action [{}x{}]  {}",
+        li(false),
+        dims.s,
+        dims.d,
+        dims.s,
+        dims.d,
+        dim(&r.input_source)
+    );
+    println!(
+        "{}          {}",
+        li(true),
+        dim(&format!(
+            "z[..6] {:?}   action[..6] {:?}",
+            r.z_in_head, r.a_in_head
+        ))
+    );
+
+    // --- stage 2: INFER (the world model actually runs) ---
+    stage(
+        2,
+        5,
+        "INFER",
+        "exact integer forward pass (the world model runs)",
+    );
+    println!(
+        "{} graph    {} ops over the named-buffer block DAG  {}",
+        li(false),
+        commas(r.ops),
+        dim("(AdaLN-zero, 16-head attention, GELU FFN, gated residuals)")
+    );
+    let hist_str = r
+        .hist
+        .iter()
+        .map(|(k, n)| format!("{} {}", commas(*n), k))
+        .collect::<Vec<_>>()
+        .join(" \u{00b7} ");
+    println!("{} ops      {}", li(false), dim(&hist_str));
+    println!(
+        "{} compute  {} multiply-accumulates, exact integer  {}",
+        li(false),
+        macs_human(r.macs),
+        dim("(no float, no GPU)")
+    );
+    println!(
+        "{} latency  forward pass in {}  {}",
+        li(false),
+        ok(&ms(r.infer)),
+        dim(&format!(
+            "({}, {})",
+            rate(r.ops as u128, r.infer, "op"),
+            rate(r.macs, r.infer, "MAC")
+        ))
+    );
+    println!(
+        "{} z_next   {:?}  {}",
+        li(true),
+        r.z_out_head,
+        dim("(predicted next-latent head, from the real forward pass)")
+    );
+
+    // --- stage 3: COMMIT (bind execution to a Fiat-Shamir transcript) ---
+    stage(
+        3,
+        5,
+        "COMMIT",
+        "bind the execution to a Fiat-Shamir transcript",
+    );
+    println!(
+        "{} witness  {} claimed op outputs ({})  trace_root {}",
+        li(false),
+        commas(r.witness_vals),
+        bytes_human(r.proof_bytes),
+        dim(&hex8(&r.trace_root))
+    );
+    println!(
+        "{} bind     {}",
+        li(true),
+        dim("absorbed model + inputs + trace, then squeezed the Freivalds r (non-adaptive)")
+    );
+
+    // --- stage 4: VERIFY (no_std, float-free) ---
+    stage(
+        4,
+        5,
+        "VERIFY",
+        "no_std, float-free, never re-runs the model",
+    );
+    println!(
+        "{} challenge derived the Freivalds r for {} linear projections",
+        li(false),
+        commas(r.linear_ops)
+    );
+    println!(
+        "{} checks   Freivalds {}  {}",
+        li(false),
+        dim("v\u{00b7}x == r\u{00b7}z"),
+        dim("(soundness \u{2264} 1/p, p = 2\u{2076}\u{00b9}\u{2212}1; union over the checks ~2\u{207b}\u{2074}\u{2074})")
+    );
+    println!(
+        "{}          {}",
+        cont(),
+        dim("exact recompute of attention, softmax, GELU, LayerNorm, residuals")
+    );
+    let speedup = if r.verify.as_secs_f64() > 0.0 {
+        r.infer.as_secs_f64() / r.verify.as_secs_f64()
+    } else {
+        0.0
+    };
+    match &r.verify_err {
+        None => println!(
+            "{} verdict  {}  in {}  {}",
+            li(true),
+            ok("ACCEPT"),
+            ms(r.verify),
+            dim(&format!(
+                "({speedup:.1}x faster than proving; audits arithmetic only)"
+            ))
+        ),
+        Some(e) => {
+            println!("{} verdict  {}  {e}", li(true), bad("REJECT"));
+            exit(1);
+        }
+    }
+
+    // --- stage 5: TAMPER (forge one matmul output) ---
+    stage(5, 5, "TAMPER", "forge one matmul output");
+    match &r.reject {
+        Some(e) => println!(
+            "{} forged matmul op {} -> {} {}  {}",
+            li(true),
+            r.forged_op.map(|i| i.to_string()).unwrap_or_default(),
+            bad("REJECT"),
+            e,
+            dim("(caught)")
+        ),
+        None => {
+            eprintln!("tamper undetected (bug)");
+            exit(1);
+        }
+    }
+
+    // --- MLOps metrics summary ---
+    println!(
+        "\n{}  infer {} \u{00b7} verify {} \u{00b7} {} int8 model \u{00b7} {} MAC \u{00b7} {} ops \u{00b7} {}",
+        paint("35;1", "metrics"),
+        ms(r.infer),
+        ms(r.verify),
+        bytes_human(r.model_bytes),
+        macs_human(r.macs),
+        commas(r.ops),
+        ok("ACCEPT")
+    );
+    println!(
+        "\n{}",
+        ok("a real le-wm world-model forward pass, proven and audited; a forged matmul is caught.")
+    );
+    if !r.is_real {
+        println!(
+            "{}",
+            dim(
+                "  weights are synthetic (real architecture, real integer inference). For the REAL"
+            )
+        );
+        println!(
+            "{}",
+            dim("  pretrained checkpoint end to end:  ./demo/run-real.sh   (docker compose --profile real up)")
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let json = args.iter().any(|a| a == "--json");
@@ -503,7 +921,7 @@ fn main() {
                 .claimed_output
                 .data()
                 .iter()
-                .map(|c| c.value())
+                .map(pwm_core::BoundedInt::value)
                 .collect();
             let tv = Instant::now();
             let accepted = verify_artifact(&artifact).is_ok();
@@ -577,345 +995,11 @@ fn main() {
         "prove-predictor" => {
             // With a bundle: the real 6-block 16-head predictor from the checkpoint.
             // Without: the real V0 dims (192/16/64, depth 6) over synthetic weights.
-            let real = pos.get(1).map(|path| {
-                let j = fs::read_to_string(path).unwrap_or_else(|e| {
-                    eprintln!("read {path} failed: {e}");
-                    exit(1);
-                });
-                lewm_predictor::load_real_predictor(&j).unwrap_or_else(|e| {
-                    eprintln!("bad bundle {path}: {e}");
-                    exit(1);
-                })
-            });
-            let is_real = real.is_some();
-            let label = if is_real {
-                "le-wm V0 predictor (6 blocks, 16 heads), REAL quantized checkpoint weights"
-            } else {
-                "le-wm V0 predictor (6 blocks, 16 heads), synthetic weights (pass a bundle for real)"
-            };
-            let input_source = real
-                .as_ref()
-                .map(|r| r.input_source.clone())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "synthetic quantized latents".to_string());
-            let t0 = Instant::now();
-            let (dims, skeleton, weights, tabs, inputs) = match real {
-                Some(r) => {
-                    let (b, w, t, i) =
-                        lewm_predictor::build_predictor_real(r.dims, r.blocks, r.x, r.c);
-                    (r.dims, b, w, t, i)
-                }
-                None => {
-                    let d = Dims {
-                        d: 192,
-                        s: 3,
-                        h: 16,
-                        dh: 64,
-                        mlp: 2048,
-                        depth: 6,
-                    };
-                    let (b, w, t, i) = lewm_predictor::build_predictor(d);
-                    (d, b, w, t, i)
-                }
-            };
-            let params: usize = weights.iter().map(|t| t.data().len()).sum();
-            let proven = lewm_predictor::prove(&skeleton, &weights, &tabs, &inputs);
-            let infer = t0.elapsed();
-            let tv = Instant::now();
-            let res = lewm_predictor::verify(&proven, &weights, &tabs, &inputs);
-            let vtime = tv.elapsed();
-            let mut forged = proven.clone();
-            let forged_op = lewm_predictor::tamper(&mut forged);
-            let reject = lewm_predictor::verify(&forged, &weights, &tabs, &inputs)
-                .err()
-                .map(|e| format!("{e:?}"));
-            let out = res.as_ref().ok().cloned().unwrap_or_default();
-
-            // --- MLOps metrics over the proven block ---
-            let hist = op_histogram(&proven.ops);
-            let macs = mac_count(&proven.ops, &weights);
-            let model_bytes = params; // int8 weights: one byte per parameter
-            let witness_vals: usize = proven.ops.iter().map(|op| op.out().len()).sum();
-            let proof_bytes = witness_vals * core::mem::size_of::<i64>();
-            let w_root = weights_root(&weights);
-            let arch = block_architecture_commitment(&proven);
-            let troot = block_root(&proven.ops);
-            let inner = dims.inner();
-            let n_linear = proven
-                .ops
-                .iter()
-                .filter(|o| matches!(o, BlockOp::Linear { .. } | BlockOp::BatchedLinear { .. }))
-                .count();
-            let z_in: &[i64] = inputs.first().map(|(_, v)| v.as_slice()).unwrap_or(&[]);
-            let a_in: &[i64] = inputs.get(1).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
-
+            let report = build_predictor_report(&pos);
             if json {
-                println!(
-                    "{}",
-                    json!({
-                        "model": label,
-                        "real_weights": is_real,
-                        "input_source": input_source,
-                        "config": {"dim": dims.d, "history": dims.s, "heads": dims.h,
-                                   "dim_head": dims.dh, "mlp": dims.mlp, "depth": dims.depth},
-                        "weight_tensors": weights.len(),
-                        "int8_params": params,
-                        "model_bytes": model_bytes,
-                        "ops": proven.ops.len(),
-                        "linear_ops": n_linear,
-                        "macs": macs.to_string(),
-                        "op_histogram": hist.iter().map(|(k, n)| json!({"op": k, "count": n})).collect::<Vec<_>>(),
-                        "weights_root": hex8(&w_root),
-                        "model_commitment": hex8(&arch),
-                        "trace_root": hex8(&troot),
-                        "infer_ms": infer.as_secs_f64() * 1000.0,
-                        "verify_ms": vtime.as_secs_f64() * 1000.0,
-                        "proof_bytes": proof_bytes,
-                        "z_out_head": &out[..out.len().min(6)],
-                        "accepted": res.is_ok(),
-                        "tamper": {"forged_op": forged_op, "rejected_with": reject},
-                    })
-                );
-                return;
-            }
-            println!(
-                "{}",
-                paint(
-                    "36;1",
-                    "ProvableWorldModel  commit-and-audit over the le-wm world model"
-                )
-            );
-            println!(
-                "{}",
-                dim("  pipeline   checkpoint -> quantize -> commit -> encode -> infer -> prove -> verify")
-            );
-
-            // --- stage 1: LOAD the committed quantized world model ---
-            stage(1, 5, "LOAD", "the committed quantized world model");
-            println!("{} model    {}", li(false), label);
-            if is_real {
-                println!(
-                    "{} source   quentinll/lewm-pusht {}",
-                    li(false),
-                    dim("(Hugging Face, MIT), int8-quantized V0 subgraph")
-                );
-            }
-            println!(
-                "{} config   dim={}, history={}, heads={}, dim_head={}, mlp={}, depth={}",
-                li(false),
-                dims.d,
-                dims.s,
-                dims.h,
-                dims.dh,
-                dims.mlp,
-                dims.depth
-            );
-            println!(
-                "{} tensors  {} int8 weight matrices, {} committed table(s)",
-                li(false),
-                weights.len(),
-                tabs.len()
-            );
-            println!(
-                "{}          {}",
-                cont(),
-                dim(&format!(
-                    "per block: qkv[{}x{}] out[{}x{}] fc1[{}x{}] fc2[{}x{}] adaln[{}x{}]",
-                    3 * inner,
-                    dims.d,
-                    dims.d,
-                    inner,
-                    dims.mlp,
-                    dims.d,
-                    dims.d,
-                    dims.mlp,
-                    6 * dims.d,
-                    dims.d
-                ))
-            );
-            println!(
-                "{} params   {} int8 weights  {}",
-                li(false),
-                commas(params),
-                dim(&format!(
-                    "({} on the wire, 1 byte each)",
-                    bytes_human(model_bytes)
-                ))
-            );
-            println!(
-                "{} commit   weights_root {}   model {}",
-                li(false),
-                dim(&hex8(&w_root)),
-                dim(&hex8(&arch))
-            );
-            println!(
-                "{} inputs   z_history [{}x{}], action [{}x{}]  {}",
-                li(false),
-                dims.s,
-                dims.d,
-                dims.s,
-                dims.d,
-                dim(&input_source)
-            );
-            println!(
-                "{}          {}",
-                li(true),
-                dim(&format!(
-                    "z[..6] {:?}   action[..6] {:?}",
-                    &z_in[..z_in.len().min(6)],
-                    &a_in[..a_in.len().min(6)]
-                ))
-            );
-
-            // --- stage 2: INFER (the world model actually runs) ---
-            stage(
-                2,
-                5,
-                "INFER",
-                "exact integer forward pass (the world model runs)",
-            );
-            println!(
-                "{} graph    {} ops over the named-buffer block DAG  {}",
-                li(false),
-                commas(proven.ops.len()),
-                dim("(AdaLN-zero, 16-head attention, GELU FFN, gated residuals)")
-            );
-            let hist_str = hist
-                .iter()
-                .map(|(k, n)| format!("{} {}", commas(*n), k))
-                .collect::<Vec<_>>()
-                .join(" \u{00b7} ");
-            println!("{} ops      {}", li(false), dim(&hist_str));
-            println!(
-                "{} compute  {} multiply-accumulates, exact integer  {}",
-                li(false),
-                macs_human(macs),
-                dim("(no float, no GPU)")
-            );
-            println!(
-                "{} latency  forward pass in {}  {}",
-                li(false),
-                ok(&ms(infer)),
-                dim(&format!(
-                    "({}, {})",
-                    rate(proven.ops.len() as u128, infer, "op"),
-                    rate(macs, infer, "MAC")
-                ))
-            );
-            println!(
-                "{} z_next   {:?}  {}",
-                li(true),
-                &out[..out.len().min(6)],
-                dim("(predicted next-latent head, from the real forward pass)")
-            );
-
-            // --- stage 3: COMMIT (bind execution to a Fiat-Shamir transcript) ---
-            stage(
-                3,
-                5,
-                "COMMIT",
-                "bind the execution to a Fiat-Shamir transcript",
-            );
-            println!(
-                "{} witness  {} claimed op outputs ({})  trace_root {}",
-                li(false),
-                commas(witness_vals),
-                bytes_human(proof_bytes),
-                dim(&hex8(&troot))
-            );
-            println!(
-                "{} bind     {}",
-                li(true),
-                dim(
-                    "absorbed model + inputs + trace, then squeezed the Freivalds r (non-adaptive)"
-                )
-            );
-
-            // --- stage 4: VERIFY (no_std, float-free) ---
-            stage(
-                4,
-                5,
-                "VERIFY",
-                "no_std, float-free, never re-runs the model",
-            );
-            println!(
-                "{} challenge derived the Freivalds r for {} linear projections",
-                li(false),
-                commas(n_linear)
-            );
-            println!(
-                "{} checks   Freivalds {}  {}",
-                li(false),
-                dim("v\u{00b7}x == r\u{00b7}z"),
-                dim("(soundness \u{2264} 1/p, p = 2\u{2076}\u{00b9}\u{2212}1; union over the checks ~2\u{207b}\u{2074}\u{2074})")
-            );
-            println!(
-                "{}          {}",
-                cont(),
-                dim("exact recompute of attention, softmax, GELU, LayerNorm, residuals")
-            );
-            let speedup = if vtime.as_secs_f64() > 0.0 {
-                infer.as_secs_f64() / vtime.as_secs_f64()
+                print_predictor_report_json(&report);
             } else {
-                0.0
-            };
-            match res {
-                Ok(_) => println!(
-                    "{} verdict  {}  in {}  {}",
-                    li(true),
-                    ok("ACCEPT"),
-                    ms(vtime),
-                    dim(&format!(
-                        "({speedup:.1}x faster than proving; audits arithmetic only)"
-                    ))
-                ),
-                Err(e) => {
-                    println!("{} verdict  {}  {e:?}", li(true), bad("REJECT"));
-                    exit(1);
-                }
-            }
-
-            // --- stage 5: TAMPER (forge one matmul output) ---
-            stage(5, 5, "TAMPER", "forge one matmul output");
-            match reject {
-                Some(e) => println!(
-                    "{} forged matmul op {} -> {} {}  {}",
-                    li(true),
-                    forged_op.map(|i| i.to_string()).unwrap_or_default(),
-                    bad("REJECT"),
-                    e,
-                    dim("(caught)")
-                ),
-                None => {
-                    eprintln!("tamper undetected (bug)");
-                    exit(1);
-                }
-            }
-
-            // --- MLOps metrics summary ---
-            println!(
-                "\n{}  infer {} \u{00b7} verify {} \u{00b7} {} int8 model \u{00b7} {} MAC \u{00b7} {} ops \u{00b7} {}",
-                paint("35;1", "metrics"),
-                ms(infer),
-                ms(vtime),
-                bytes_human(model_bytes),
-                macs_human(macs),
-                commas(proven.ops.len()),
-                ok("ACCEPT")
-            );
-            println!(
-                "\n{}",
-                ok("a real le-wm world-model forward pass, proven and audited; a forged matmul is caught.")
-            );
-            if !is_real {
-                println!(
-                    "{}",
-                    dim("  weights are synthetic (real architecture, real integer inference). For the REAL")
-                );
-                println!(
-                    "{}",
-                    dim("  pretrained checkpoint end to end:  ./demo/run-real.sh   (docker compose --profile real up)")
-                );
+                print_predictor_report_human(&report);
             }
         }
         other => {
