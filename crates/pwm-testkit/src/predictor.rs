@@ -408,7 +408,10 @@ mod tests {
                 *t = w(14, 4, 2, &[2, 0, 0, 1, 1, 1, 1, -1]);
             }
         }
-        assert_eq!(verify_predictor(&art), Err(VE::CommitmentMismatch("model")));
+        assert_eq!(
+            verify_predictor(&art),
+            Err(VE::CommitmentMismatch(pwm_verifier::CommitmentKind::Model))
+        );
     }
 
     #[test]
@@ -419,7 +422,9 @@ mod tests {
         art.tables[0].outputs[0] += 1;
         assert_eq!(
             verify_predictor(&art),
-            Err(VE::CommitmentMismatch("quantization"))
+            Err(VE::CommitmentMismatch(
+                pwm_verifier::CommitmentKind::Quantization
+            ))
         );
     }
 
@@ -431,7 +436,7 @@ mod tests {
         art.inputs[0].1[0] += 1;
         assert_eq!(
             verify_predictor(&art),
-            Err(VE::CommitmentMismatch("inputs"))
+            Err(VE::CommitmentMismatch(pwm_verifier::CommitmentKind::Inputs))
         );
     }
 

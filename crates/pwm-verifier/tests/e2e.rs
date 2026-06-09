@@ -12,7 +12,7 @@ use pwm_export::reference::{LayerSpec, Model};
 use pwm_prover::{prove_feedforward, prove_planning, OutputBinding};
 use pwm_verifier::{
     verify, verify_interactive, verify_planning, verify_planning_batched, verify_sampled,
-    VerifyError,
+    CommitmentKind, VerifyError,
 };
 
 fn weight(id: u32, rows: u32, cols: u32, vals: &[i8]) -> Tensor {
@@ -221,7 +221,10 @@ fn reject_tampered_weight() {
     let mut data: Vec<BoundedInt> = w.data().to_vec();
     data[0] = BoundedInt::new(7, -128, 127).unwrap();
     *w = Tensor::new(w.tensor_id(), w.shape().to_vec(), w.scale_id(), data).unwrap();
-    assert_eq!(verify(&a), Err(VerifyError::CommitmentMismatch("model")));
+    assert_eq!(
+        verify(&a),
+        Err(VerifyError::CommitmentMismatch(CommitmentKind::Model))
+    );
 }
 
 #[test]
