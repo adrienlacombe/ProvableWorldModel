@@ -138,6 +138,9 @@ pub enum PlanError {
     NoCandidates,
     /// Fewer initial latents than the history window, or a zero window/horizon.
     BadHistory,
+    /// A candidate's exact goal-MSE cost did not fit `i64` (outside the V0 planning
+    /// envelope; `mse_cost` returned `None`).
+    CostOverflow,
 }
 
 /// Prove an autoregressive rollout (`StatementType::P1Rollout`): predict the next
@@ -206,7 +209,7 @@ pub fn prove_planning(
             .iter()
             .map(|c| c.value())
             .collect();
-        costs.push(mse_cost(&output, goal));
+        costs.push(mse_cost(&output, goal).ok_or(PlanError::CostOverflow)?);
         candidates.push(artifact);
     }
     let (selected_index, selected_cost) = argmin(&costs).expect("non-empty costs");

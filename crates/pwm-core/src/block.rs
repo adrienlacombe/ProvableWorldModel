@@ -17,7 +17,7 @@
 use alloc::vec::Vec;
 
 use crate::serialize::CanonicalEncode;
-use crate::transcript::blake2s256;
+use crate::transcript::{blake2s256, Transcript};
 
 /// Domain tag for a block-op Merkle leaf.
 pub const TAG_BLOCK_LEAF: &[u8; 16] = b"pwm.bleaf.v1\0\0\0\0";
@@ -604,4 +604,34 @@ pub fn block_root(ops: &[BlockOp]) -> [u8; 32] {
         level = next;
     }
     level[0]
+}
+
+/// Domain string for the named-buffer block Fiat-Shamir transcript.
+pub const BLOCK_TRANSCRIPT_DOMAIN: &[u8] = b"pwm.block.v1";
+
+/// The **canonical** Fiat-Shamir transcript for a named-buffer block (specs.md §5,
+/// §7) — the single source of truth for the block-path challenge binding.
+///
+/// It absorbs the [`block_root`] (which commits **every** op's claimed `out`, since
+/// [`BlockOp`] canonical-encodes its output) and then each seeded input buffer,
+/// *before* any Freivalds challenge is squeezed during the walk. Binding the
+/// outputs first is exactly what makes the lazily-squeezed challenges
+/// non-adaptive: the prover commits all accumulators before any `r` exists.
+///
+/// This MUST be the only construction used by both `prove`/`verify` paths; keeping
+/// it here (not duplicated per call site) prevents the binding from silently
+/// drifting and losing soundness. `verify_block` builds it internally from the
+/// proven block, so callers cannot get it wrong.
+pub fn block_transcript(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
+    let mut t = Transcript::new(BLOCK_TRANSCRIPT_DOMAIN);
+    t.absorb(b"block_root", &block_root(&block.ops));
+    for (id, v) in inputs {
+        t.absorb_u64(b"in_buf", *id as u64);
+        let mut bytes = Vec::with_capacity(v.len() * 8);
+        for x in v {
+            bytes.extend_from_slice(&x.to_le_bytes());
+        }
+        t.absorb(b"in_vals", &bytes);
+    }
+    t
 }

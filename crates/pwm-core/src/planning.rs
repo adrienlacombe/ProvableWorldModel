@@ -14,16 +14,23 @@ use crate::predictor::round_div;
 use crate::tables::ActivationTable;
 use crate::transcript::blake2s256;
 
-/// Exact goal-latent cost `Σ_j (pred[j] − goal[j])²` over integers. Inputs must
-/// have equal length (the caller guarantees shape via the trace/graph).
-pub fn mse_cost(pred: &[i64], goal: &[i64]) -> i64 {
-    pred.iter()
-        .zip(goal.iter())
-        .map(|(&p, &g)| {
-            let d = p - g;
-            d * d
-        })
-        .sum()
+/// Exact goal-latent cost `Σ_j (pred[j] − goal[j])²` over integers, or `None` if
+/// the exact cost does not fit `i64`. Inputs must have equal length (the caller
+/// guarantees shape via the trace/graph).
+///
+/// The sum is accumulated in **checked `i128`**: at the project's own latent size
+/// (192-dim) with M31-range residuals a single squared term reaches `~2^62` and the
+/// `i64` sum would overflow, letting the argmin select over wrapped costs. Checked
+/// `i128` is overflow-safe even for an out-of-envelope goal, and `None` (returned
+/// when the exact cost exceeds `i64`) signals rejection rather than a wrapped value
+/// (OverflowPolicy::Reject — fail closed).
+pub fn mse_cost(pred: &[i64], goal: &[i64]) -> Option<i64> {
+    let mut acc: i128 = 0;
+    for (&p, &g) in pred.iter().zip(goal.iter()) {
+        let d = (p as i128) - (g as i128);
+        acc = acc.checked_add(d.checked_mul(d)?)?;
+    }
+    i64::try_from(acc).ok()
 }
 
 /// Why an argmin selection was rejected.
@@ -241,8 +248,21 @@ mod tests {
 
     #[test]
     fn mse_is_sum_of_squared_diffs() {
-        assert_eq!(mse_cost(&[1, 2, 3], &[1, 0, 0]), 13); // 0 + 4 + 9
-        assert_eq!(mse_cost(&[5], &[2]), 9);
+        assert_eq!(mse_cost(&[1, 2, 3], &[1, 0, 0]), Some(13)); // 0 + 4 + 9
+        assert_eq!(mse_cost(&[5], &[2]), Some(9));
+    }
+
+    #[test]
+    fn mse_cost_overflow_is_rejected_not_wrapped() {
+        // Near-M31 residuals over a realistic latent dim exceed i64: the exact
+        // cost must signal rejection (None), never a wrapped value (WQ-03).
+        let big = (1i64 << 30) - 1; // P_HALF, the M31 envelope
+        let pred = vec![big; 192];
+        let goal = vec![-big; 192];
+        assert_eq!(mse_cost(&pred, &goal), None);
+        // A single near-max residual still fits i64 and computes exactly.
+        let d = 2 * big; // (2^31 - 2)^2 ≈ 2^62 < i64::MAX
+        assert_eq!(mse_cost(&[big], &[-big]), Some(d * d));
     }
 
     #[test]

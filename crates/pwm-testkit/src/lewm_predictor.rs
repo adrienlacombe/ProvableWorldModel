@@ -14,11 +14,10 @@
 //! always cover. The proof attests this quantized relation. The graph is validated
 //! at small dims and then instantiated at the real V0 dims (192/16/64).
 
-use pwm_core::block::{block_root, Block, BlockOp};
+use pwm_core::block::{Block, BlockOp};
 use pwm_core::fixed_point::BoundedInt;
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::Tensor;
-use pwm_core::transcript::Transcript;
 use pwm_prover::prove_block;
 use pwm_verifier::{verify_block, VerifyError};
 use serde_json::Value;
@@ -516,17 +515,6 @@ pub fn build_predictor_real(d: Dims, blocks: Vec<RealBlock>, xv: Vec<i64>, cv: V
     })
 }
 
-fn transcript_for(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
-    let mut t = Transcript::new(b"pwm.block.v1");
-    t.absorb(b"block_root", &block_root(&block.ops));
-    for (id, v) in inputs {
-        t.absorb_u64(b"in_buf", *id as u64);
-        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-        t.absorb(b"in_vals", &bytes);
-    }
-    t
-}
-
 /// Run the prover (the exact integer reference) over a predictor skeleton.
 pub fn prove(
     skeleton: &Block,
@@ -544,8 +532,7 @@ pub fn verify(
     tabs: &[ActivationTable],
     inputs: &[(u32, Vec<i64>)],
 ) -> Result<Vec<i64>, VerifyError> {
-    let mut t = transcript_for(proven, inputs);
-    verify_block(proven, weights, tabs, inputs, &mut t)
+    verify_block(proven, weights, tabs, inputs)
 }
 
 /// Forge the first attention/FFN projection output; the Freivalds check rejects it.

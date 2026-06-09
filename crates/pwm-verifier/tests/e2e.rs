@@ -330,7 +330,7 @@ fn reject_batched_planning_tampered_candidate() {
     }
     assert!(matches!(
         verify_planning_batched(&proof),
-        Err(VerifyError::Candidate { index: 1 })
+        Err(VerifyError::Candidate { index: 1, .. })
     ));
 }
 
@@ -373,8 +373,8 @@ fn reject_planning_tampered_candidate() {
     let co = &proof.candidates[1].claimed_output;
     proof.candidates[1].claimed_output =
         Tensor::new(co.tensor_id(), co.shape().to_vec(), co.scale_id(), data).unwrap();
-    assert_eq!(
+    assert!(matches!(
         verify_planning(&proof),
-        Err(VerifyError::Candidate { index: 1 })
-    );
+        Err(VerifyError::Candidate { index: 1, .. })
+    ));
 }

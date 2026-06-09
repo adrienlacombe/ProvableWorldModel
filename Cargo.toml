@@ -56,3 +56,9 @@ all = "warn"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+# Soundness: the verifier recomputes data-dependent ops (matmul, layernorm
+# variance, softmax sums) in integer arithmetic. A silent i64 wrap could make a
+# wrong recompute match a forged value, so overflow must trap (fail closed) rather
+# than wrap, in release as well as debug. The hot path stays integer-only; the cost
+# is negligible against Blake2s and the field reductions.
+overflow-checks = true

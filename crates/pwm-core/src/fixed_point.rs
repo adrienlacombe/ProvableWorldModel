@@ -261,6 +261,19 @@ impl OverflowPolicy {
     }
 }
 
+/// The largest right-shift `r` for which `1i64 << r` is a valid positive divisor
+/// (`r = 62` gives `2^62`; `1i64 << 63` is negative and `>= 64` overflows the
+/// shift). Every requant/rescale shift consumed from a proof must satisfy
+/// `r <= MAX_SHIFT`; a larger committed shift is rejected, not computed.
+pub const MAX_SHIFT: u32 = 62;
+
+/// True iff `r` is a usable right-shift amount (`r <= MAX_SHIFT`). Honest V0
+/// shifts are small (single digits); a larger value is an out-of-envelope or
+/// adversarial manifest and must fail closed rather than reach `1i64 << r`.
+pub const fn valid_shift(r: u32) -> bool {
+    r <= MAX_SHIFT
+}
+
 /// The exact quotient/remainder split of `n` by `2^r` with a **nonnegative**
 /// remainder (RFC-0002 §4.4, INV-FP-05): `q = floor(n / 2^r)` (toward −∞) and
 /// `rem = n − q·2^r`, so `0 <= rem < 2^r` and `n == q·2^r + rem` exactly. These

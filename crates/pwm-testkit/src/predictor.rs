@@ -24,7 +24,6 @@ use pwm_core::serialize::{
 };
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::Tensor;
-use pwm_core::transcript::Transcript;
 use pwm_prover::prove_block;
 use pwm_verifier::{verify_block, VerifyError};
 
@@ -271,23 +270,11 @@ fn overlay(proof: &PredictorProof) -> (Block, Vec<(u32, Vec<i64>)>) {
     (b, input_pairs(&proof.inputs))
 }
 
-fn transcript_for(b: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
-    let mut t = Transcript::new(b"pwm.block.v1");
-    t.absorb(b"block_root", &block_root(&b.ops));
-    for (id, v) in inputs {
-        t.absorb_u64(b"in_buf", *id as u64);
-        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-        t.absorb(b"in_vals", &bytes);
-    }
-    t
-}
-
 /// Audit a predictor proof: Freivalds-check the linears, exactly recompute the
 /// attention, softmax, GELU, and residuals, and return the verified output.
 pub fn verify(proof: &PredictorProof) -> Result<Vec<i64>, VerifyError> {
     let (b, inputs) = overlay(proof);
-    let mut t = transcript_for(&b, &inputs);
-    verify_block(&b, &weights(), &tables(), &inputs, &mut t)
+    verify_block(&b, &weights(), &tables(), &inputs)
 }
 
 /// The Merkle root over the proof's claimed op graph (for logging / binding).
@@ -349,6 +336,31 @@ mod tests {
         assert!(matches!(
             verify(&proof),
             Err(VerifyError::FreivaldsCheckFailed { op_id }) if op_id == op
+        ));
+    }
+
+    /// Block-path counterpart of the mod-`p` accumulator-aliasing forgery (WQ-01):
+    /// inflating a `BatchedLinear` accumulator by `p` is invisible to Freivalds but
+    /// must be rejected by the soundness range guard before the field check.
+    #[test]
+    fn modp_forged_predictor_is_rejected() {
+        use pwm_core::field::FREIVALDS_P;
+        let (mut proof, _) = prove();
+        let b = block();
+        let mut forged = None;
+        for (i, op) in b.ops.iter().enumerate() {
+            if matches!(op, BlockOp::BatchedLinear { .. }) {
+                if let Some(first) = proof.op_outputs.get_mut(i).and_then(|v| v.first_mut()) {
+                    *first += FREIVALDS_P as i64;
+                }
+                forged = Some(op.op_id());
+                break;
+            }
+        }
+        let op = forged.expect("a batched-linear op");
+        assert!(matches!(
+            verify(&proof),
+            Err(VerifyError::AccumulatorRange { op_id }) if op_id == op
         ));
     }
 }

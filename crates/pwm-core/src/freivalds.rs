@@ -19,7 +19,41 @@
 
 use alloc::vec::Vec;
 
-use crate::field::Fp61;
+use crate::field::{Fp61, FREIVALDS_P, P_HALF};
+
+/// Soundness bound on every Freivalds operand (specs.md §7, RFC-0002 §7 / INV-FP-10).
+///
+/// Freivalds checks `v·x == r·z` in `F_p` (`p = 2^61 − 1`), which only proves
+/// `z ≡ Wx (mod p)` — **not** `z = Wx` over the integers. Without a range check a
+/// prover can submit `z' = Wx + k·p`: for *every* challenge `r`, `r·z' ≡ r·Wx
+/// (mod p)`, so the check passes with probability 1 and the forged accumulator
+/// propagates into a different accepted output (the mod-`p` aliasing forgery).
+///
+/// The fix is to bound every operand (input `x`, bias, claimed accumulator `z`) so
+/// the true product `Wx + bias` and the claimed `z` lie within one length-`p`
+/// window (`|z − (Wx+bias)| < p`), which makes congruence imply integer equality.
+/// V0 accumulators fit a single signed M31 (`SAFE_HI = P_HALF`); the widest V0 dot
+/// product (the `mlp_dim = 2048` int8 MLP) peaks at `2048·127·127 ≈ 2^25 ≪ P_HALF`,
+/// so this bound never rejects an honest proof.
+pub const FREIVALDS_OPERAND_BOUND: i64 = P_HALF;
+
+/// True iff every element of `vals` lies in `[−FREIVALDS_OPERAND_BOUND, +FREIVALDS_OPERAND_BOUND]`.
+pub fn within_operand_bound(vals: &[i64]) -> bool {
+    vals.iter()
+        .all(|&v| (-FREIVALDS_OPERAND_BOUND..=FREIVALDS_OPERAND_BOUND).contains(&v))
+}
+
+/// Static soundness margin for a linear op of input dimension `cols` with int8
+/// weights (`|W| ≤ 127`): with every operand bounded by `B = FREIVALDS_OPERAND_BOUND`
+/// the true accumulator satisfies `|Wx + bias| ≤ 127·cols·B + B`, and the claimed
+/// `z` satisfies `|z| ≤ B`, so `|z − (Wx+bias)| ≤ 127·cols·B + 2·B`. This must stay
+/// `< p` for congruence to imply equality; the check guards against a pathologically
+/// wide layer where even bounded operands could alias across a multiple of `p`.
+pub fn dims_within_soundness_margin(cols: usize) -> bool {
+    let b = FREIVALDS_OPERAND_BOUND as i128;
+    // |z − (Wx+bias)| ≤ 127·cols·B + 2·B  must be < p.
+    127i128 * (cols as i128) * b + 2 * b < FREIVALDS_P as i128
+}
 
 /// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an int8 slice.
 pub fn dot_fp_i8(coeffs: &[Fp61], vals: &[i8]) -> Fp61 {
@@ -57,7 +91,22 @@ pub fn dot_fp_i64(coeffs: &[Fp61], vals: &[i64]) -> Fp61 {
 /// Verify a linear op with bias, `out = W·x + bias`, in one Freivalds equation:
 /// `r·out == v·x + r·bias`, where `v = rᵀW`. All vectors are `i64`. This is the
 /// check the verifier runs per `Linear` trace record (specs.md §7).
+///
+/// Returns `false` (reject) unless the **soundness range guard** also holds: every
+/// input, bias, and claimed accumulator must lie within [`FREIVALDS_OPERAND_BOUND`]
+/// and the layer width must satisfy [`dims_within_soundness_margin`]. This guard is
+/// what makes the mod-`p` Freivalds check sound over the integers — without it a
+/// prover can add a multiple of `p` to an accumulator and pass with probability 1.
+/// Folding it in here makes every caller (flat trace, block, batched) sound by
+/// construction; a caller cannot forget it.
 pub fn check_linear_biased(v: &[Fp61], x: &[i64], bias: &[i64], r: &[Fp61], out: &[i64]) -> bool {
+    if !dims_within_soundness_margin(x.len())
+        || !within_operand_bound(x)
+        || !within_operand_bound(bias)
+        || !within_operand_bound(out)
+    {
+        return false;
+    }
     let lhs = dot_fp_i64(v, x).add(dot_fp_i64(r, bias));
     let rhs = dot_fp_i64(r, out);
     lhs == rhs

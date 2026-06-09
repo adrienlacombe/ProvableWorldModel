@@ -5,11 +5,10 @@
 //! add — composed over the buffer DAG, proven by `prove_block` and checked by
 //! `verify_block`. The valid block verifies; a tampered op output is rejected.
 
-use pwm_core::block::{block_root, Block, BlockOp};
+use pwm_core::block::{Block, BlockOp};
 use pwm_core::fixed_point::BoundedInt;
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::Tensor;
-use pwm_core::transcript::Transcript;
 use pwm_prover::prove_block;
 use pwm_verifier::{verify_block, VerifyError};
 
@@ -137,25 +136,12 @@ fn inputs() -> Vec<(u32, Vec<i64>)> {
     vec![(0, vec![4, 8]), (1, vec![1, 1])]
 }
 
-/// Build the verifier's transcript, bound to the proven block's ops + inputs.
-fn transcript_for(block: &Block, inputs: &[(u32, Vec<i64>)]) -> Transcript {
-    let mut t = Transcript::new(b"pwm.block.v1");
-    t.absorb(b"block_root", &block_root(&block.ops));
-    for (id, v) in inputs {
-        t.absorb_u64(b"in_buf", *id as u64);
-        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-        t.absorb(b"in_vals", &bytes);
-    }
-    t
-}
-
 #[test]
 fn accept_adaln_gated_ffn_block() {
     let proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();
     // x=[4,8]; LN->[-8,8]; modulate(scale0,shift0)->[-8,8]; fc1->[-8,8,0,-16];
     // GELU id->same; fc2->[-16,-24]; gate(=1)->[-16,-24]; +x residual -> [-12,-16].
-    let mut t = transcript_for(&proven, &inputs());
-    let out = verify_block(&proven, &weights(), &tables(), &inputs(), &mut t).unwrap();
+    let out = verify_block(&proven, &weights(), &tables(), &inputs()).unwrap();
     assert_eq!(out, vec![-12, -16]);
 }
 
@@ -168,9 +154,8 @@ fn reject_tampered_block_linear() {
             out[0] += 1;
         }
     }
-    let mut t = transcript_for(&proven, &inputs());
     assert!(matches!(
-        verify_block(&proven, &weights(), &tables(), &inputs(), &mut t),
+        verify_block(&proven, &weights(), &tables(), &inputs()),
         Err(VerifyError::FreivaldsCheckFailed { op_id: 7 })
     ));
 }
@@ -240,8 +225,7 @@ fn exp_tables() -> Vec<ActivationTable> {
 #[test]
 fn accept_single_head_attention() {
     let proven = prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
-    let mut t = transcript_for(&proven, &attention_inputs());
-    let out = verify_block(&proven, &[], &exp_tables(), &attention_inputs(), &mut t).unwrap();
+    let out = verify_block(&proven, &[], &exp_tables(), &attention_inputs()).unwrap();
     // scores=[[1,0],[0,1]]; softmax rows -> [[400,200],[200,400]]; prob·V(=I) -> same.
     assert_eq!(out, vec![400, 200, 200, 400]);
 }
@@ -256,9 +240,8 @@ fn reject_tampered_attention_scores() {
             out[0] += 1;
         }
     }
-    let mut t = transcript_for(&proven, &attention_inputs());
     assert!(matches!(
-        verify_block(&proven, &[], &exp_tables(), &attention_inputs(), &mut t),
+        verify_block(&proven, &[], &exp_tables(), &attention_inputs()),
         Err(VerifyError::BlockOpMismatch { op_id: 1 })
     ));
 }
@@ -349,8 +332,7 @@ fn accept_multiposition_attention_with_projection() {
         (7, vec![1, 0, 0, 1]), // V
     ];
     let proven = prove_block(&block, &wq, &exp_tables(), &inputs).unwrap();
-    let mut t = transcript_for(&proven, &inputs);
-    let out = verify_block(&proven, &wq, &exp_tables(), &inputs, &mut t).unwrap();
+    let out = verify_block(&proven, &wq, &exp_tables(), &inputs).unwrap();
     assert_eq!(out, vec![400, 200, 200, 400]);
 }
 
@@ -445,8 +427,7 @@ fn accept_vit_encoder_block() {
     };
     let inputs = vec![(0, vec![1, 0, 0, 1])];
     let proven = prove_block(&block, &weights, &tables, &inputs).unwrap();
-    let mut t = transcript_for(&proven, &inputs);
-    let out = verify_block(&proven, &weights, &tables, &inputs, &mut t).unwrap();
+    let out = verify_block(&proven, &weights, &tables, &inputs).unwrap();
     assert_eq!(out, vec![1804, 802, 1201, 400]);
 }
 
@@ -478,9 +459,8 @@ fn reject_tampered_encoder_projection() {
     if let BlockOp::BatchedLinear { out, .. } = &mut proven.ops[0] {
         out[3] += 1;
     }
-    let mut t = transcript_for(&proven, &inputs);
     assert!(matches!(
-        verify_block(&proven, &weights, &tables, &inputs, &mut t),
+        verify_block(&proven, &weights, &tables, &inputs),
         Err(VerifyError::FreivaldsCheckFailed { op_id: 1 })
     ));
 }
@@ -494,9 +474,35 @@ fn reject_tampered_block_residual() {
             out[0] += 5;
         }
     }
-    let mut t = transcript_for(&proven, &inputs());
     assert!(matches!(
-        verify_block(&proven, &weights(), &tables(), &inputs(), &mut t),
+        verify_block(&proven, &weights(), &tables(), &inputs()),
         Err(VerifyError::BlockOpMismatch { op_id: 11 })
+    ));
+}
+
+#[test]
+fn reject_out_of_range_shift() {
+    // A committed requant shift past MAX_SHIFT would make `1i64 << r` negative or
+    // overflow; the verifier rejects it (InvalidShift) before computing (WQ-08).
+    let op = BlockOp::Requant {
+        op_id: 7,
+        in_buf: 0,
+        out_buf: 1,
+        out: vec![0],
+        shift: 63, // > MAX_SHIFT (62)
+        zero_point: 0,
+        clamp_lo: -100,
+        clamp_hi: 100,
+        rounding: RND,
+    };
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![op],
+        output_buf: 1,
+    };
+    let inputs = vec![(0u32, vec![5i64])];
+    assert!(matches!(
+        verify_block(&block, &[], &[], &inputs),
+        Err(VerifyError::InvalidShift { op_id: 7 })
     ));
 }
