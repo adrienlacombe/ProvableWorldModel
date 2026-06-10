@@ -888,7 +888,7 @@ mod tests {
         }
     }
 
-    fn run(d: Dims) {
+    fn run(d: Dims) -> Vec<i64> {
         let c = build_predictor(d);
         let artifact = prove(&c).expect("prove");
         let out = verify(&artifact).expect("verify");
@@ -899,23 +899,42 @@ mod tests {
             err <= c.tolerance.expect("tolerance"),
             "float-vs-int error {err} exceeds tolerance"
         );
+        out
     }
+
+    /// The pinned integer output of the small synthetic predictor (#181): locks
+    /// the exact quantized semantics end-to-end — kernels, tables, scheme
+    /// derivation, and the deterministic synthetic weights. Any change to the
+    /// integer pipeline shows up as a diff here, not just as a tolerance drift.
+    /// Verified against the float reference within `SYNTH_TOLERANCE` by `run`.
+    const SMALL_DIMS_OUTPUT: [i64; 24] = [
+        20, 18, 27, -66, 25, -17, 21, -31, -24, -18, 14, -21, 4, -48, 44, 49, 18, -32, -36, -18,
+        31, -18, -8, 63,
+    ];
 
     #[test]
     fn small_dims_one_block_verifies() {
-        run(small());
+        assert_eq!(run(small()), SMALL_DIMS_OUTPUT);
     }
 
     #[test]
     fn small_dims_six_blocks_verify_within_float_tolerance() {
-        run(Dims {
-            d: 8,
-            s: 3,
-            h: 2,
-            dh: 4,
-            mlp: 16,
-            depth: 6,
-        });
+        // Pins the same vector as the one-block test: the AdaLN-gated block
+        // contributions at these synthetic weights shift the float reference by
+        // less than one `f_ln` quantization step, so blocks 2..6 do not move the
+        // final per-position LayerNorm off the depth-1 grid points (the float
+        // references differ — ~3e-3 — and both stay within tolerance).
+        assert_eq!(
+            run(Dims {
+                d: 8,
+                s: 3,
+                h: 2,
+                dh: 4,
+                mlp: 16,
+                depth: 6,
+            }),
+            SMALL_DIMS_OUTPUT
+        );
     }
 
     #[test]
