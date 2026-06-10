@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The full le-wm conditional predictor block wired into `prove_block`.
+//! The full le-wm conditional predictor block wired into the commitment-bound
+//! predictor relation (`prove_predictor` / `verify_predictor`).
 //!
 //! This builds the real le-wm predictor architecture as a named-buffer block DAG
 //! and proves one P0 step in exact integer arithmetic: per ConditionalBlock,
@@ -11,15 +12,20 @@
 //! Quantization is a self-consistent integer scheme: every Linear, Modulate, Gate
 //! and residual is requant-clamped back to int8, so all activations stay int8 and
 //! the committed tables (inverse-sqrt, GELU, SiLU, a bounded monotonic softmax exp)
-//! always cover. The proof attests this quantized relation. The graph is validated
-//! at small dims and then instantiated at the real V0 dims (192/16/64).
+//! always cover. The proof attests this quantized relation, bound to the model /
+//! quantization / input / output commitments in the artifact's [`PublicInput`].
+//! The graph is validated at small dims and then instantiated at the real V0 dims
+//! (192/16/64).
+//!
+//! [`PublicInput`]: pwm_core::public_input::PublicInput
 
+use pwm_core::audit::PredictorArtifact;
 use pwm_core::block::{Block, BlockOp};
 use pwm_core::fixed_point::BoundedInt;
 use pwm_core::tables::ActivationTable;
-use pwm_core::tensor::Tensor;
-use pwm_prover::prove_block;
-use pwm_verifier::{verify_block, VerifyError};
+use pwm_core::tensor::{Dtype, Scale, Tensor};
+use pwm_prover::{prove_predictor, OutputBinding, ProveError};
+use pwm_verifier::{verify_predictor, VerifyError};
 
 use crate::bundle::{self, BundleError};
 
@@ -27,14 +33,26 @@ const CLO: i64 = -128;
 const CHI: i64 = 127;
 const RND: u8 = 0; // NearestTiesToEven
 
-/// What a predictor build returns: the skeleton block, the weight tensors, the
-/// committed tables, and the seeded input buffers, all ready for `prove_block`.
-pub type Built = (
-    Block,
-    Vec<Tensor>,
-    Vec<ActivationTable>,
-    Vec<(u32, Vec<i64>)>,
-);
+/// Tensor id of the claimed predictor output (outside the weight id range).
+const OUT_TENSOR_ID: u32 = 2000;
+/// Scale id shared by the int8 weights, inputs, and claimed output.
+const SCALE_ID: u32 = 0;
+
+/// Everything a predictor build produces, ready for the commitment-bound prover:
+/// the skeleton block, the weight tensors, the committed tables, the scale table,
+/// and the seeded input buffers.
+pub struct PredictorCircuit {
+    /// The block-op DAG with empty (unproven) op outputs.
+    pub block: Block,
+    /// The quantized int8 weight tensors (their Merkle root binds the model).
+    pub weights: Vec<Tensor>,
+    /// The committed activation tables (bound by the quantization commitment).
+    pub tables: Vec<ActivationTable>,
+    /// The scale table (bound by the quantization commitment).
+    pub scales: Vec<Scale>,
+    /// The seeded public input buffers (latent history + action embedding).
+    pub inputs: Vec<(u32, Vec<i64>)>,
+}
 
 /// Predictor dimensions.
 #[derive(Clone, Copy)]
@@ -473,7 +491,7 @@ pub fn build_predictor_with(
     xv: Vec<i64>,
     cv: Vec<i64>,
     mut block_weights: impl FnMut(&mut Builder, Dims) -> BlockWeights,
-) -> Built {
+) -> PredictorCircuit {
     let mut b = Builder::new();
     let mut x = b.input(xv);
     let c = b.input(cv);
@@ -488,13 +506,23 @@ pub fn build_predictor_with(
         ops: b.ops,
         output_buf: out,
     };
-    (block, b.weights, tables(), b.inputs)
+    PredictorCircuit {
+        block,
+        weights: b.weights,
+        tables: tables(),
+        scales: vec![Scale {
+            scale_id: SCALE_ID,
+            log2: 0,
+            dtype: Dtype::I8,
+        }],
+        inputs: b.inputs,
+    }
 }
 
 /// Build the full predictor over **synthetic** int8 weights and inputs. The graph
 /// is the real le-wm architecture, so this validates at small dims and runs at the
 /// real V0 dims.
-pub fn build_predictor(d: Dims) -> Built {
+pub fn build_predictor(d: Dims) -> PredictorCircuit {
     let xv: Vec<i64> = (0..d.s * d.d).map(|i| (i as i64 % 5) - 2).collect();
     let cv: Vec<i64> = (0..d.s * d.d).map(|i| (i as i64 % 3) - 1).collect();
     build_predictor_with(d, xv, cv, synth_block_weights)
@@ -502,7 +530,12 @@ pub fn build_predictor(d: Dims) -> Built {
 
 /// Build the full predictor over the **real** quantized checkpoint weights, a
 /// quantized latent history `xv` and action embedding `cv`.
-pub fn build_predictor_real(d: Dims, blocks: Vec<RealBlock>, xv: Vec<i64>, cv: Vec<i64>) -> Built {
+pub fn build_predictor_real(
+    d: Dims,
+    blocks: Vec<RealBlock>,
+    xv: Vec<i64>,
+    cv: Vec<i64>,
+) -> PredictorCircuit {
     let mut it = blocks.into_iter();
     build_predictor_with(d, xv, cv, move |b, d| {
         let rb = it.next().expect("a RealBlock per depth");
@@ -516,29 +549,42 @@ pub fn build_predictor_real(d: Dims, blocks: Vec<RealBlock>, xv: Vec<i64>, cv: V
     })
 }
 
-/// Run the prover (the exact integer reference) over a predictor skeleton.
-pub fn prove(
-    skeleton: &Block,
-    weights: &[Tensor],
-    tabs: &[ActivationTable],
-    inputs: &[(u32, Vec<i64>)],
-) -> Block {
-    prove_block(skeleton, weights, tabs, inputs).expect("prove predictor")
+/// Prove one predictor step as a commitment-bound [`PredictorArtifact`]: run the
+/// exact integer reference over the circuit and bind the model / quantization /
+/// input / output commitments into the artifact's public input.
+pub fn prove(c: &PredictorCircuit) -> Result<PredictorArtifact, ProveError> {
+    prove_predictor(
+        &c.block,
+        &c.weights,
+        &c.tables,
+        &c.scales,
+        &c.inputs,
+        OutputBinding {
+            tensor_id: OUT_TENSOR_ID,
+            scale_id: SCALE_ID,
+        },
+    )
 }
 
-/// Audit a proven predictor block; returns the verified output.
-pub fn verify(
-    proven: &Block,
-    weights: &[Tensor],
-    tabs: &[ActivationTable],
-    inputs: &[(u32, Vec<i64>)],
-) -> Result<Vec<i64>, VerifyError> {
-    verify_block(proven, weights, tabs, inputs)
+/// Audit a predictor artifact: recompute and check the model / quantization /
+/// planner / input / output commitments, then run the full arithmetic audit
+/// (Freivalds linear checks + exact recompute + wiring). Returns the verified
+/// claimed output values.
+pub fn verify(artifact: &PredictorArtifact) -> Result<Vec<i64>, VerifyError> {
+    verify_predictor(artifact)?;
+    Ok(artifact
+        .claimed_output
+        .data()
+        .iter()
+        .map(BoundedInt::value)
+        .collect())
 }
 
-/// Forge the first attention/FFN projection output; the Freivalds check rejects it.
-pub fn tamper(proven: &mut Block) -> Option<u32> {
-    for op in &mut proven.ops {
+/// Forge the first attention/FFN projection output inside the artifact's proven
+/// block; the Freivalds check rejects it (the commitments still match, because the
+/// architecture commitment covers the ops with outputs cleared).
+pub fn tamper(artifact: &mut PredictorArtifact) -> Option<u32> {
+    for op in &mut artifact.block.ops {
         if let BlockOp::BatchedLinear { op_id, out, .. } = op {
             if let Some(first) = out.first_mut() {
                 *first += 1;
@@ -606,41 +652,139 @@ pub fn load_real_predictor(json: &str) -> Result<RealPredictor, BundleError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pwm_core::audit::output_tensor;
+    use pwm_verifier::CommitmentKind;
+
+    fn small() -> Dims {
+        Dims {
+            d: 8,
+            s: 3,
+            h: 2,
+            dh: 4,
+            mlp: 16,
+            depth: 1,
+        }
+    }
 
     fn run(d: Dims) {
-        let (skeleton, weights, tabs, inputs) = build_predictor(d);
-        let proven = prove(&skeleton, &weights, &tabs, &inputs);
-        verify(&proven, &weights, &tabs, &inputs).expect("verify");
+        let c = build_predictor(d);
+        let artifact = prove(&c).expect("prove");
+        verify(&artifact).expect("verify");
     }
 
     #[test]
     fn small_dims_one_block_verifies() {
-        run(Dims {
-            d: 8,
-            s: 3,
-            h: 2,
-            dh: 4,
-            mlp: 16,
-            depth: 1,
-        });
+        run(small());
     }
 
     #[test]
     fn tampered_predictor_is_rejected() {
-        let d = Dims {
-            d: 8,
-            s: 3,
-            h: 2,
-            dh: 4,
-            mlp: 16,
-            depth: 1,
-        };
-        let (sk, w, t, inp) = build_predictor(d);
-        let mut p = prove(&sk, &w, &t, &inp);
-        let op = tamper(&mut p).expect("a linear op");
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        let op = tamper(&mut artifact).expect("a linear op");
         assert!(matches!(
-            verify(&p, &w, &t, &inp),
+            verify(&artifact),
             Err(VerifyError::FreivaldsCheckFailed { op_id }) if op_id == op
+        ));
+    }
+
+    #[test]
+    fn swapped_weight_is_a_model_commitment_mismatch() {
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        let original = &artifact.weights[0];
+        let mut data = original.data().to_vec();
+        data[0] = BoundedInt::new(data[0].value() ^ 1, -128, 127).expect("int8");
+        artifact.weights[0] = Tensor::new(
+            original.tensor_id(),
+            original.shape().to_vec(),
+            original.scale_id(),
+            data,
+        )
+        .expect("tensor");
+        assert!(matches!(
+            verify(&artifact),
+            Err(VerifyError::CommitmentMismatch(CommitmentKind::Model))
+        ));
+    }
+
+    #[test]
+    fn swapped_table_is_a_quantization_commitment_mismatch() {
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        artifact.tables[0].outputs[0] += 1;
+        assert!(matches!(
+            verify(&artifact),
+            Err(VerifyError::CommitmentMismatch(
+                CommitmentKind::Quantization
+            ))
+        ));
+    }
+
+    #[test]
+    fn swapped_scale_is_a_quantization_commitment_mismatch() {
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        artifact.scales[0].log2 += 1;
+        assert!(matches!(
+            verify(&artifact),
+            Err(VerifyError::CommitmentMismatch(
+                CommitmentKind::Quantization
+            ))
+        ));
+    }
+
+    #[test]
+    fn swapped_input_is_an_input_commitment_mismatch() {
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        artifact.inputs[0].1[0] += 1;
+        assert!(matches!(
+            verify(&artifact),
+            Err(VerifyError::CommitmentMismatch(CommitmentKind::Inputs))
+        ));
+    }
+
+    #[test]
+    fn swapped_output_values_are_an_output_mismatch() {
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        let mut vals: Vec<i64> = artifact
+            .claimed_output
+            .data()
+            .iter()
+            .map(BoundedInt::value)
+            .collect();
+        vals[0] += 1;
+        artifact.claimed_output = output_tensor(
+            artifact.claimed_output.tensor_id(),
+            artifact.claimed_output.scale_id(),
+            &vals,
+        )
+        .expect("output tensor");
+        assert!(matches!(
+            verify(&artifact),
+            Err(VerifyError::OutputMismatch)
+        ));
+    }
+
+    #[test]
+    fn relabeled_output_tensor_is_an_output_commitment_mismatch() {
+        let c = build_predictor(small());
+        let mut artifact = prove(&c).expect("prove");
+        let vals: Vec<i64> = artifact
+            .claimed_output
+            .data()
+            .iter()
+            .map(BoundedInt::value)
+            .collect();
+        // Same values, different tensor identity: the recomputed output
+        // commitment no longer matches the public input's.
+        artifact.claimed_output = output_tensor(artifact.claimed_output.tensor_id() + 1, 0, &vals)
+            .expect("output tensor");
+        assert!(matches!(
+            verify(&artifact),
+            Err(VerifyError::OutputCommitmentMismatch)
         ));
     }
 
@@ -668,9 +812,9 @@ mod tests {
             .collect();
         let xv = vec![1i64; d.s * d.d];
         let cv = vec![0i64; d.s * d.d];
-        let (sk, w, t, inp) = build_predictor_real(d, blocks, xv, cv);
-        let proven = prove(&sk, &w, &t, &inp);
-        verify(&proven, &w, &t, &inp).expect("verify real-weights predictor");
+        let c = build_predictor_real(d, blocks, xv, cv);
+        let artifact = prove(&c).expect("prove");
+        verify(&artifact).expect("verify real-weights predictor");
     }
 
     #[test]

@@ -25,7 +25,8 @@ use std::fs;
 use std::process::exit;
 use std::time::Instant;
 
-use pwm_core::block::{block_architecture_commitment, block_root, BlockOp};
+use pwm_core::audit::RELATION_PREDICTOR;
+use pwm_core::block::{block_root, BlockOp};
 use pwm_core::commit::weights_root;
 use pwm_core::serialize::canonical_bytes;
 use pwm_core::tensor::Tensor;
@@ -350,6 +351,9 @@ struct PredictorReport {
     hist: Vec<(&'static str, usize)>,
     weights_root: [u8; 32],
     model_commitment: [u8; 32],
+    quantization_commitment: [u8; 32],
+    input_commitment: [u8; 32],
+    output_commitment: [u8; 32],
     trace_root: [u8; 32],
     infer: std::time::Duration,
     verify: std::time::Duration,
@@ -394,10 +398,10 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "synthetic quantized latents".to_string());
     let t0 = Instant::now();
-    let (dims, skeleton, weights, tabs, inputs) = match real {
+    let (dims, circuit) = match real {
         Some(r) => {
-            let (b, w, t, i) = lewm_predictor::build_predictor_real(r.dims, r.blocks, r.x, r.c);
-            (r.dims, b, w, t, i)
+            let c = lewm_predictor::build_predictor_real(r.dims, r.blocks, r.x, r.c);
+            (r.dims, c)
         }
         None => {
             let d = Dims {
@@ -408,34 +412,38 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
                 mlp: 2048,
                 depth: 6,
             };
-            let (b, w, t, i) = lewm_predictor::build_predictor(d);
-            (d, b, w, t, i)
+            (d, lewm_predictor::build_predictor(d))
         }
     };
-    let params: usize = weights.iter().map(|t| t.data().len()).sum();
-    let proven = lewm_predictor::prove(&skeleton, &weights, &tabs, &inputs);
+    let params: usize = circuit.weights.iter().map(|t| t.data().len()).sum();
+    let artifact = lewm_predictor::prove(&circuit).unwrap_or_else(|e| {
+        eprintln!("prove failed: {e:?}");
+        exit(1);
+    });
     let infer = t0.elapsed();
     let tv = Instant::now();
-    let res = lewm_predictor::verify(&proven, &weights, &tabs, &inputs);
+    let res = lewm_predictor::verify(&artifact);
     let verify = tv.elapsed();
-    let mut forged = proven.clone();
+    let mut forged = artifact.clone();
     let forged_op = lewm_predictor::tamper(&mut forged);
-    let reject = lewm_predictor::verify(&forged, &weights, &tabs, &inputs)
+    let reject = lewm_predictor::verify(&forged)
         .err()
         .map(|e| format!("{e:?}"));
     let out = res.as_ref().ok().cloned().unwrap_or_default();
 
     // --- MLOps metrics over the proven block ---
-    let hist = op_histogram(&proven.ops);
-    let macs = mac_count(&proven.ops, &weights);
-    let witness_vals: usize = proven.ops.iter().map(|op| op.out().len()).sum();
-    let n_linear = proven
+    let pi = &artifact.public_input;
+    let hist = op_histogram(&artifact.block.ops);
+    let macs = mac_count(&artifact.block.ops, &artifact.weights);
+    let witness_vals: usize = artifact.block.ops.iter().map(|op| op.out().len()).sum();
+    let n_linear = artifact
+        .block
         .ops
         .iter()
         .filter(|o| matches!(o, BlockOp::Linear { .. } | BlockOp::BatchedLinear { .. }))
         .count();
-    let z_in: &[i64] = inputs.first().map_or(&[], |(_, v)| v.as_slice());
-    let a_in: &[i64] = inputs.get(1).map_or(&[], |(_, v)| v.as_slice());
+    let z_in: &[i64] = artifact.inputs.first().map_or(&[], |(_, v)| v.as_slice());
+    let a_in: &[i64] = artifact.inputs.get(1).map_or(&[], |(_, v)| v.as_slice());
     let head = |v: &[i64]| v[..v.len().min(6)].to_vec();
 
     PredictorReport {
@@ -443,19 +451,22 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
         is_real,
         input_source,
         inner: dims.inner(),
-        weight_tensors: weights.len(),
-        table_count: tabs.len(),
+        weight_tensors: artifact.weights.len(),
+        table_count: artifact.tables.len(),
         params,
         model_bytes: params, // int8 weights: one byte per parameter
-        ops: proven.ops.len(),
+        ops: artifact.block.ops.len(),
         linear_ops: n_linear,
         witness_vals,
         proof_bytes: witness_vals * core::mem::size_of::<i64>(),
         macs,
         hist,
-        weights_root: weights_root(&weights),
-        model_commitment: block_architecture_commitment(&proven),
-        trace_root: block_root(&proven.ops),
+        weights_root: weights_root(&artifact.weights),
+        model_commitment: pi.model_commitment,
+        quantization_commitment: pi.quantization_commitment,
+        input_commitment: pi.latent_history_commitment.unwrap_or_default(),
+        output_commitment: pi.claimed_output_commitment,
+        trace_root: block_root(&artifact.block.ops),
         infer,
         verify,
         z_out_head: head(&out),
@@ -485,8 +496,12 @@ fn print_predictor_report_json(r: &PredictorReport) {
             "linear_ops": r.linear_ops,
             "macs": r.macs.to_string(),
             "op_histogram": r.hist.iter().map(|(k, n)| json!({"op": k, "count": n})).collect::<Vec<_>>(),
+            "relation": RELATION_PREDICTOR,
             "weights_root": hex8(&r.weights_root),
             "model_commitment": hex8(&r.model_commitment),
+            "quantization_commitment": hex8(&r.quantization_commitment),
+            "input_commitment": hex8(&r.input_commitment),
+            "output_commitment": hex8(&r.output_commitment),
             "trace_root": hex8(&r.trace_root),
             "infer_ms": r.infer.as_secs_f64() * 1000.0,
             "verify_ms": r.verify.as_secs_f64() * 1000.0,
@@ -568,10 +583,11 @@ fn print_predictor_report_human(r: &PredictorReport) {
         ))
     );
     println!(
-        "{} commit   weights_root {}   model {}",
+        "{} commit   weights_root {}   model {}   quant {}",
         li(false),
         dim(&hex8(&r.weights_root)),
-        dim(&hex8(&r.model_commitment))
+        dim(&hex8(&r.model_commitment)),
+        dim(&hex8(&r.quantization_commitment))
     );
     println!(
         "{} inputs   z_history [{}x{}], action [{}x{}]  {}",
@@ -649,17 +665,34 @@ fn print_predictor_report_human(r: &PredictorReport) {
         dim(&hex8(&r.trace_root))
     );
     println!(
+        "{} public   model {}  quant {}  inputs {}  output {}",
+        li(false),
+        dim(&hex8(&r.model_commitment)),
+        dim(&hex8(&r.quantization_commitment)),
+        dim(&hex8(&r.input_commitment)),
+        dim(&hex8(&r.output_commitment))
+    );
+    println!(
         "{} bind     {}",
         li(true),
-        dim("absorbed model + inputs + trace, then squeezed the Freivalds r (non-adaptive)")
+        dim("absorbed the public input + inputs + trace, then squeezed the Freivalds r (non-adaptive)")
     );
 
-    // --- stage 4: VERIFY (no_std, float-free) ---
+    // --- stage 4: VERIFY (no_std, float-free, commitment-bound) ---
     stage(
         4,
         5,
         "VERIFY",
-        "no_std, float-free, never re-runs the model",
+        "no_std, float-free, commitment-bound, never re-runs the model",
+    );
+    println!(
+        "{} binding  recomputed model, quantization, planner, input + output commitments",
+        li(false)
+    );
+    println!(
+        "{}          {}",
+        cont(),
+        dim("each must equal the artifact's public input (else CommitmentMismatch)")
     );
     println!(
         "{} challenge derived the Freivalds r for {} linear projections",
@@ -689,7 +722,7 @@ fn print_predictor_report_human(r: &PredictorReport) {
             ok("ACCEPT"),
             ms(r.verify),
             dim(&format!(
-                "({speedup:.1}x faster than proving; audits arithmetic only)"
+                "({speedup:.1}x faster than proving; commitments + arithmetic audited)"
             ))
         ),
         Some(e) => {
