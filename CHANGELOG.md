@@ -15,6 +15,21 @@ entry.
 
 ### Security
 
+- **Per-buffer range enforcement on the exact-recompute path** (#180): the
+  verifier now rejects — with the typed `VerifyError::BufferRange` /
+  `VerifyError::InputRange` — any prover-supplied value outside the single-M31
+  envelope `[-P_HALF, P_HALF]` before computing on it: every exactly-recomputed
+  op's claimed output (flat trace and block paths), every seeded block input
+  buffer, and every proof-carried quantization parameter (`zero_point`,
+  `clamp_lo/hi`, `one`). The data-dependent kernels (`predictor::matmul`,
+  `layernorm` variance, `softmax` exp sum and `e·one` products) now accumulate
+  in `i128` with explicit envelope bound checks (mirroring
+  `fixed_point::finish`), and `ActivationTable::eval` computes its index in
+  `i128`, so an adversarial buffer or table can no longer wrap `i64` arithmetic
+  into a fail-closed **panic** (under `overflow-checks`) — it is rejected
+  cleanly. Narrows verifier acceptance; no honest proof regresses (full suite
+  plus the real-dims predictor test stay green).
+
 - **The predictor bundle is now commitment-chained to the export** (#188): the
   Python export emits, in `lewm_predictor.json`, a predictor-scoped
   `weights_root` computed over exactly the 30 proven block tensors in the Rust

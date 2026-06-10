@@ -31,13 +31,17 @@ pub struct ActivationTable {
 
 impl ActivationTable {
     /// Exact table read: the output for input `x`, or `None` if `x` is outside the
-    /// committed domain (an out-of-domain read is a verifier rejection).
+    /// committed domain (an out-of-domain read is a verifier rejection). The index
+    /// is computed in `i128` so an adversarial `lo` near `i64::MIN` cannot wrap
+    /// the subtraction (fail-closed, issue #180).
     pub fn eval(&self, x: i64) -> Option<i64> {
-        if x < self.lo {
+        let idx = x as i128 - self.lo as i128;
+        if idx < 0 {
             return None;
         }
-        let idx = (x - self.lo) as usize;
-        self.outputs.get(idx).copied()
+        usize::try_from(idx)
+            .ok()
+            .and_then(|i| self.outputs.get(i).copied())
     }
 
     /// Inclusive upper bound of the input domain.

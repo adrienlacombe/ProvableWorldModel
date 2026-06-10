@@ -13,18 +13,40 @@
 
 use alloc::vec::Vec;
 
+use crate::field::{in_signed_range, M31_SIGNED_HI, M31_SIGNED_LO};
 use crate::fixed_point::{requantize, BoundedInt, Rounding};
 use crate::tables::ActivationTable;
 
 /// Round-to-nearest integer division by a positive divisor `n` (ties away from
 /// zero). Used for the LayerNorm mean/variance reductions.
 pub fn round_div(a: i64, n: i64) -> i64 {
+    round_div_i128(a as i128, n as i128) as i64
+}
+
+/// [`round_div`] over `i128`, for the LayerNorm reductions whose intermediate
+/// sums can exceed `i64` on adversarial (envelope-bounded) inputs.
+fn round_div_i128(a: i128, n: i128) -> i128 {
     debug_assert!(n > 0);
     if a >= 0 {
         (a + n / 2) / n
     } else {
         -((-a + n / 2) / n)
     }
+}
+
+/// True iff every element lies in the single-M31 envelope `[-P_HALF, P_HALF]` —
+/// the same bound the Freivalds operand guard enforces. The exact-recompute
+/// kernels fail closed (return `None`) on out-of-envelope inputs rather than
+/// risking an `i64` wrap (a panic under `overflow-checks`), so a malicious
+/// buffer is *rejected*, never computed on (issue #180).
+fn within_envelope(vals: &[i64]) -> bool {
+    vals.iter().all(|&v| in_signed_range(v))
+}
+
+/// True iff an `i128` accumulator fits the single-M31 envelope (the bound
+/// mirror of [`crate::fixed_point`]'s `finish`).
+fn acc_in_envelope(acc: i128) -> bool {
+    (M31_SIGNED_LO as i128..=M31_SIGNED_HI as i128).contains(&acc)
 }
 
 /// Exact integer dense linear `out[r] = bias[r] + Σ_c W[r·cols + c] · x[c]` over a
@@ -122,8 +144,11 @@ pub fn residual_add(a: &[i64], b: &[i64]) -> Vec<i64> {
 ///
 /// Exact integer recipe: `mean = round(Σx / n)`, `var = round(Σ(x−mean)² / n)`,
 /// `inv_std = inv_sqrt_table(var)`, `out_i = requant((x_i − mean) · inv_std)`.
-/// Returns `None` if `var` is outside the committed table domain (a verifier
-/// rejection). `eps` is folded into the table by the exporter.
+/// Returns `None` if `var` is outside the committed table domain, if any input
+/// escapes the single-M31 envelope, or if `(x_i − mean) · inv_std` does not fit
+/// an `i64` (verifier rejections, fail-closed — issue #180). The variance sum
+/// accumulates in `i128`: even envelope-bounded inputs can push `Σ(x−mean)²`
+/// past `i64`. `eps` is folded into the table by the exporter.
 pub fn layernorm(
     x: &[i64],
     inv_sqrt: &ActivationTable,
@@ -132,29 +157,33 @@ pub fn layernorm(
     clamp_hi: i64,
     mode: Rounding,
 ) -> Option<Vec<i64>> {
-    let n = x.len() as i64;
+    let n = x.len() as i128;
     if n == 0 {
         return Some(Vec::new());
     }
-    let sum: i64 = x.iter().sum();
-    let mean = round_div(sum, n);
-    let sq_sum: i64 = x.iter().map(|&xi| (xi - mean) * (xi - mean)).sum();
-    let var = round_div(sq_sum, n);
+    if !within_envelope(x) {
+        return None;
+    }
+    let sum: i128 = x.iter().map(|&xi| xi as i128).sum();
+    // |mean| <= max|x| <= P_HALF, so the i64 narrowing is exact.
+    let mean = round_div_i128(sum, n) as i64;
+    let sq_sum: i128 = x
+        .iter()
+        .map(|&xi| {
+            let d = (xi - mean) as i128;
+            d * d
+        })
+        .sum();
+    // var <= max (x_i − mean)² < 2^62, so the i64 narrowing is exact.
+    let var = round_div_i128(sq_sum, n) as i64;
     let inv_std = inv_sqrt.eval(var)?;
-    Some(
-        x.iter()
-            .map(|&xi| {
-                requantize(
-                    (xi - mean) * inv_std,
-                    shift_bits,
-                    0,
-                    clamp_lo,
-                    clamp_hi,
-                    mode,
-                )
-            })
-            .collect(),
-    )
+    x.iter()
+        .map(|&xi| {
+            let prod = (xi - mean) as i128 * inv_std as i128;
+            let prod = i64::try_from(prod).ok()?;
+            Some(requantize(prod, shift_bits, 0, clamp_lo, clamp_hi, mode))
+        })
+        .collect()
 }
 
 /// Numerically-stable row softmax with a committed exp table, returning integer
@@ -162,30 +191,43 @@ pub fn layernorm(
 ///
 /// Exact integer recipe: `m = max(scores)`, `e_i = exp_table(s_i − m)`,
 /// `prob_i = (e_i · one) / Σ e`. Returns `None` if any `s_i − m` is outside the
-/// committed table domain, or all exps are zero.
+/// committed table domain, all exps are zero, any score escapes the single-M31
+/// envelope, or a probability escapes it (fail-closed — issue #180). The exp
+/// sum and the `e_i · one` products accumulate in `i128`: committed table
+/// outputs and `one` are prover-chosen `i64`s, so the `i64` math could wrap.
 pub fn softmax(scores: &[i64], exp: &ActivationTable, one: i64) -> Option<Vec<i64>> {
     if scores.is_empty() {
         return Some(Vec::new());
     }
+    if !within_envelope(scores) {
+        return None;
+    }
     let m = *scores.iter().max().unwrap();
     let mut exps = Vec::with_capacity(scores.len());
-    let mut sum: i64 = 0;
+    let mut sum: i128 = 0;
     for &s in scores {
         let e = exp.eval(s - m)?;
-        sum += e;
+        sum += e as i128;
         exps.push(e);
     }
     if sum == 0 {
         return None;
     }
-    Some(exps.iter().map(|&e| (e * one) / sum).collect())
+    exps.iter()
+        .map(|&e| {
+            let p = (e as i128 * one as i128) / sum;
+            acc_in_envelope(p).then_some(p as i64)
+        })
+        .collect()
 }
 
 /// Exact integer matmul for attention's data-dependent products. `a` is
 /// `[rows, inner]` row-major; if `transpose_b`, `b` is `[cols, inner]` and the
 /// result is `a·bᵀ` (the QKᵀ scores), else `b` is `[inner, cols]` and the result
 /// is `a·b` (prob·V). Returns `[rows, cols]` row-major, or `None` on a length
-/// mismatch.
+/// mismatch, an operand outside the single-M31 envelope, or an accumulator that
+/// escapes it (fail-closed — issue #180). Accumulation is in `i128`: products of
+/// envelope-bounded operands reach `2^60`, so a wide contraction can wrap `i64`.
 pub fn matmul(
     a: &[i64],
     b: &[i64],
@@ -197,19 +239,25 @@ pub fn matmul(
     if a.len() != rows * inner || b.len() != cols * inner {
         return None;
     }
+    if !within_envelope(a) || !within_envelope(b) {
+        return None;
+    }
     let mut out = alloc::vec![0i64; rows * cols];
     for i in 0..rows {
         for j in 0..cols {
-            let mut acc = 0i64;
+            let mut acc = 0i128;
             for k in 0..inner {
                 let bv = if transpose_b {
                     b[j * inner + k]
                 } else {
                     b[k * cols + j]
                 };
-                acc += a[i * inner + k] * bv;
+                acc += a[i * inner + k] as i128 * bv as i128;
             }
-            out[i * cols + j] = acc;
+            if !acc_in_envelope(acc) {
+                return None;
+            }
+            out[i * cols + j] = acc as i64;
         }
     }
     Some(out)
@@ -329,5 +377,83 @@ mod tests {
             Rounding::NearestTiesToEven
         )
         .is_none());
+    }
+
+    // --- Fail-closed overflow guards (issue #180): adversarial buffers must be
+    // rejected with `None`, never wrap an i64 (a panic under overflow-checks). ---
+
+    use crate::field::M31_SIGNED_HI;
+
+    #[test]
+    fn matmul_small_case_is_exact() {
+        // a = [[1,2],[3,4]] · b = [[5,6],[7,8]] = [[19,22],[43,50]].
+        let out = matmul(&[1, 2, 3, 4], &[5, 6, 7, 8], 2, 2, 2, false).unwrap();
+        assert_eq!(out, vec![19, 22, 43, 50]);
+    }
+
+    #[test]
+    fn matmul_rejects_out_of_envelope_operand() {
+        assert!(matmul(&[M31_SIGNED_HI + 1], &[1], 1, 1, 1, false).is_none());
+        assert!(matmul(&[1], &[-M31_SIGNED_HI - 1], 1, 1, 1, false).is_none());
+    }
+
+    #[test]
+    fn matmul_fails_closed_on_wide_accumulator() {
+        // 16 envelope-edge products: 16 · P_HALF² ≈ 1.8e19 wraps an i64 sum; the
+        // i128 accumulator computes it exactly and the envelope check rejects it.
+        let a = vec![M31_SIGNED_HI; 16];
+        let b = vec![M31_SIGNED_HI; 16];
+        assert!(matmul(&a, &b, 1, 16, 1, false).is_none());
+    }
+
+    #[test]
+    fn layernorm_rejects_out_of_envelope_input() {
+        let table = idtable(0, 0, 100);
+        assert!(layernorm(
+            &[M31_SIGNED_HI + 1, 0],
+            &table,
+            0,
+            -100,
+            100,
+            Rounding::NearestTiesToEven
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn layernorm_fails_closed_on_variance_overflow() {
+        // 16 envelope-edge centered squares: Σ(x−mean)² ≈ 1.8e19 wraps an i64; the
+        // i128 sum computes the variance exactly, which then misses the committed
+        // table domain — a clean `None`, not a panic.
+        let x: Vec<i64> = (0..16)
+            .map(|i| {
+                if i % 2 == 0 {
+                    M31_SIGNED_HI
+                } else {
+                    -M31_SIGNED_HI
+                }
+            })
+            .collect();
+        let table = idtable(0, 0, 1000);
+        assert!(layernorm(&x, &table, 0, -100, 100, Rounding::NearestTiesToEven).is_none());
+    }
+
+    #[test]
+    fn softmax_rejects_out_of_envelope_score() {
+        let exp = idtable(1, -10, 0);
+        assert!(softmax(&[M31_SIGNED_HI + 1, 0], &exp, 100).is_none());
+    }
+
+    #[test]
+    fn softmax_fails_closed_on_out_of_envelope_probability() {
+        // Adversarial committed table with huge mixed-sign outputs: Σe = 2, so a
+        // probability (e·one)/Σe ≈ 2^49 escapes the envelope. The i128 product
+        // computes it exactly (the old i64 `e · one` could wrap) and rejects.
+        let exp = ActivationTable {
+            table_id: 1,
+            lo: -1,
+            outputs: vec![-(1 << 40) + 2, 1 << 40],
+        };
+        assert!(softmax(&[0, -1], &exp, 1024).is_none());
     }
 }
