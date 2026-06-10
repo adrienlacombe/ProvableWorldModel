@@ -15,6 +15,18 @@ entry.
 
 ### Changed
 
+- **The `prove-predictor` demo path is now commitment-bound** (#187): the full
+  6-block predictor (synthetic and `--profile real`) routes through
+  `pwm_prover::prove_predictor` → `PredictorArtifact` and is verified by
+  `pwm_verifier::verify_predictor`, so the demo's ACCEPT now asserts the model /
+  quantization / planner / input / output commitments in the artifact's public
+  input, not just the arithmetic. `lewm_predictor::prove` returns
+  `Result<PredictorArtifact, ProveError>` (was a bare `Block` with an internal
+  `expect`), `verify` takes the artifact, and the builders return a
+  `PredictorCircuit` struct (block, weights, tables, scales, inputs) instead of a
+  4-tuple. The CLI VERIFY stage narration states the commitment checks, and the
+  report carries the quantization / input / output commitments.
+
 - **Pivot (2026-06-05): cryptographic backend changed from Circle-STARK (vendored
   Stwo) to the CommitLLM commit-and-audit scheme.** The proof target (quantized
   LeWorldModel predictor → rollout → fixed-candidate planner) is unchanged.
