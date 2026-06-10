@@ -90,6 +90,15 @@ entry.
 
 ### Fixed
 
+- Closed the remaining block-path test-coverage gaps (#181): `Requant` was the
+  one `BlockOp` variant without a tampered-output reject test (all 12 now
+  reject a bumped claimed output with the exact typed error and `op_id`); the
+  small-dims predictor accept tests now pin the exact integer output vector
+  (not just `is_ok` + float tolerance), locking the quantized semantics
+  end-to-end; and the soundness mutation campaign gained a
+  `range_check.modp_predictor` mutant — the mod-`p` accumulator-aliasing
+  forgery on a `BatchedLinear` accumulator — so the predictor/block path's
+  Freivalds range guard is merge-gated like the flat demo path's.
 - The soundness mutation campaign registered no mutant for the `tensor_memory`
   (op-to-op wiring) component, so its merge gate passed vacuously; it now exercises
   a `WiringMismatch` mutant. The committed `requantize` golden fixture is now run

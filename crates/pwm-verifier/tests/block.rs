@@ -884,3 +884,42 @@ fn reject_layernorm_out_of_range_shift() {
         Err(VerifyError::InvalidShift { op_id: 4 })
     ));
 }
+
+#[test]
+fn accept_and_reject_tampered_requant_output() {
+    // Requant was the one BlockOp variant without a tampered-output reject test
+    // (#181); with it, all 12 variants reject a bumped claimed output:
+    // Linear (reject_tampered_block_linear), BatchedLinear
+    // (reject_tampered_encoder_projection), MatMul/Softmax
+    // (reject_tampered_attention_scores, reject_tampered_elementwise_op_outputs),
+    // Activation/LayerNorm/Modulate/Gate (reject_tampered_elementwise_op_outputs),
+    // Add (reject_tampered_block_residual), Slice/Concat
+    // (reject_tampered_slice_and_concat), and Requant here.
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::Requant {
+            op_id: 1,
+            in_buf: 0,
+            out_buf: 1,
+            out: vec![],
+            shift: 1,
+            zero_point: 0,
+            clamp_lo: -100,
+            clamp_hi: 100,
+            rounding: RND,
+        }],
+        output_buf: 1,
+    };
+    let inputs = vec![(0u32, vec![10, -7])];
+    // Hand-computed: 10 >> 1 = 5 exactly; -7/2 = -3.5, floor q = -4 with rem 1
+    // (= half), and the tie bumps to even: q + (q & 1) = -4.
+    let proven = prove_block(&block, &[], &[], &inputs).unwrap();
+    assert_eq!(
+        verify_block(&proven, &[], &[], &inputs).unwrap(),
+        vec![5, -4]
+    );
+    assert!(matches!(
+        tamper_op(&block, &[], &[], &inputs, 1),
+        Err(VerifyError::BlockOpMismatch { op_id: 1 })
+    ));
+}
