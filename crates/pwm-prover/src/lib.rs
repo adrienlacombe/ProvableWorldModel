@@ -27,7 +27,7 @@ use pwm_core::field::{try_encode, OutOfRange};
 use pwm_core::fixed_point::{requantize, Rounding};
 use pwm_core::planning::{argmin, mse_cost};
 use pwm_core::predictor::{
-    gate_vec, layernorm, linear, matmul, modulate_vec, residual_add, softmax_rows,
+    batched_linear, gate_vec, layernorm, linear, matmul, modulate_vec, residual_add, softmax_rows,
 };
 use pwm_core::public_input::PublicInput;
 use pwm_core::relation::StatementType;
@@ -628,12 +628,7 @@ pub fn prove_block(
                         .collect(),
                     None => vec![0i64; rows],
                 };
-                // Same shared kernel as `Linear`, applied per sequence row.
-                let mut out = Vec::with_capacity(s * rows);
-                for tt in 0..s {
-                    let xrow = &x[tt * cols..(tt + 1) * cols];
-                    out.extend(linear(wd, xrow, &bias, rows, cols));
-                }
+                let out = batched_linear(wd, &x, &bias, s, rows, cols);
                 bufs.insert(out_buf, out.clone());
                 BlockOp::BatchedLinear {
                     op_id,

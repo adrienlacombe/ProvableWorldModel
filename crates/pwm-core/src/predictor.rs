@@ -78,6 +78,27 @@ pub fn linear(
         .collect()
 }
 
+/// Exact integer batched dense linear over a flattened `[seq, cols]` input.
+///
+/// Returns a flattened `[seq, rows]` buffer, applying [`linear`] independently to
+/// each sequence row with the same weight matrix and bias vector.
+pub fn batched_linear(
+    weight: &[BoundedInt],
+    x: &[i64],
+    bias: &[i64],
+    seq: usize,
+    rows: usize,
+    cols: usize,
+) -> Vec<i64> {
+    debug_assert_eq!(x.len(), seq * cols);
+    let mut out = Vec::with_capacity(seq * rows);
+    for tt in 0..seq {
+        let start = tt * cols;
+        out.extend(linear(weight, &x[start..start + cols], bias, rows, cols));
+    }
+    out
+}
+
 /// AdaLN-zero modulation, per channel: `out = requant(x · (one + scale)) + shift`
 /// (le-wm `modulate(x, shift, scale) = x*(1+scale)+shift`, in fixed point). `one`
 /// is the fixed-point unit at `scale`'s scale; `shift_bits` rescales the product.
@@ -287,6 +308,9 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    use crate::field::Fp61;
+    use crate::freivalds::{check_linear_biased, precompute_v};
+
     fn idtable(id: u32, lo: i64, hi: i64) -> ActivationTable {
         ActivationTable {
             table_id: id,
@@ -295,12 +319,54 @@ mod tests {
         }
     }
 
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state
+    }
+
     #[test]
     fn round_div_rounds_to_nearest() {
         assert_eq!(round_div(7, 2), 4); // 3.5 -> 4 (away from zero)
         assert_eq!(round_div(-7, 2), -4);
         assert_eq!(round_div(10, 5), 2);
         assert_eq!(round_div(2, 4), 1); // 0.5 -> 1
+    }
+
+    #[test]
+    fn linear_kernels_match_freivalds_relation() {
+        let mut state = 0x1820_5eed_cafe_f00d;
+        for _ in 0..128 {
+            let rows = 1 + (lcg(&mut state) % 6) as usize;
+            let cols = 1 + (lcg(&mut state) % 6) as usize;
+            let seq = 1 + (lcg(&mut state) % 5) as usize;
+
+            let w_i8: Vec<i8> = (0..rows * cols)
+                .map(|_| (lcg(&mut state) % 17) as i8 - 8)
+                .collect();
+            let weight: Vec<BoundedInt> = w_i8
+                .iter()
+                .map(|&v| BoundedInt::new(v as i64, -128, 127).unwrap())
+                .collect();
+            let bias: Vec<i64> = (0..rows)
+                .map(|_| (lcg(&mut state) % 23) as i64 - 11)
+                .collect();
+            let x: Vec<i64> = (0..seq * cols)
+                .map(|_| (lcg(&mut state) % 31) as i64 - 15)
+                .collect();
+            let r: Vec<Fp61> = (0..rows).map(|_| Fp61::new(lcg(&mut state))).collect();
+            let v = precompute_v(&r, &w_i8, rows, cols);
+
+            let batched = batched_linear(&weight, &x, &bias, seq, rows, cols);
+            for tt in 0..seq {
+                let xrow = &x[tt * cols..(tt + 1) * cols];
+                let out = linear(&weight, xrow, &bias, rows, cols);
+                let bout = &batched[tt * rows..(tt + 1) * rows];
+                assert_eq!(bout, out.as_slice());
+                assert!(check_linear_biased(&v, xrow, &bias, &r, bout));
+            }
+        }
     }
 
     #[test]
