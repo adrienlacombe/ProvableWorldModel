@@ -15,12 +15,15 @@
 //! CI — the gate the green skeleton never provided.
 
 use pwm_core::audit::output_tensor;
+use pwm_core::block::{Block, BlockOp};
 use pwm_core::commit::claimed_output_commitment;
 use pwm_core::field::FREIVALDS_P;
-use pwm_core::fixed_point::{requantize, Rounding};
+use pwm_core::fixed_point::{requantize, BoundedInt, Rounding};
 use pwm_core::planning::verify_argmin;
+use pwm_core::tensor::Tensor;
 use pwm_core::trace::OpRecord;
-use pwm_verifier::{verify, VerifyError};
+use pwm_prover::prove_block;
+use pwm_verifier::{verify, verify_block, VerifyError};
 
 use crate::demo::prove_demo;
 use crate::mutation::{Mutant, MutationCampaign, MutationOperator};
@@ -81,6 +84,47 @@ fn modp_accumulator_rejected() -> bool {
     verify(&art).is_err()
 }
 
+/// True iff the mod-`p` accumulator-aliasing forgery on the **predictor/block
+/// path** (add `p` to a `BatchedLinear` accumulator) is rejected by the live
+/// block verifier with the typed range-guard error (#181). Freivalds checks
+/// congruence mod `p`, so without the operand range guard this forgery passes
+/// every challenge with probability 1 — the named-buffer analog of
+/// `range_check.modp_accumulator`. Requiring `AccumulatorRange` (not just any
+/// error) pins the rejection to the guard itself.
+fn modp_predictor_batched_rejected() -> bool {
+    // Identity 2x2 weight, two-row batched projection of [3,4],[5,6].
+    let data = [1i64, 0, 0, 1]
+        .iter()
+        .map(|&v| BoundedInt::new(v, -128, 127).expect("i8 weight"))
+        .collect();
+    let weights = vec![Tensor::new(10, vec![2, 2], 0, data).expect("2x2 tensor")];
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::BatchedLinear {
+            op_id: 1,
+            weight_id: 10,
+            bias_id: None,
+            in_buf: 0,
+            out_buf: 1,
+            out: Vec::new(),
+            seq: 2,
+        }],
+        output_buf: 1,
+    };
+    let inputs = vec![(0u32, vec![3, 4, 5, 6])];
+    let Ok(mut proven) = prove_block(&block, &weights, &[], &inputs) else {
+        return false;
+    };
+    match &mut proven.ops[0] {
+        BlockOp::BatchedLinear { out, .. } => out[0] += FREIVALDS_P as i64,
+        _ => return false,
+    }
+    matches!(
+        verify_block(&proven, &weights, &[], &inputs),
+        Err(VerifyError::AccumulatorRange { op_id: 1 })
+    )
+}
+
 /// True iff breaking the op-to-op wiring is rejected (the `tensor_memory`
 /// component): bump a mid-trace record's first input cell while leaving the prior
 /// record's output intact, so the threaded running activation no longer matches.
@@ -131,6 +175,12 @@ impl MutationCampaign for SoundnessCampaign {
                 "drop the Freivalds accumulator range guard: add p to an accumulator (mod-p aliasing)",
             ),
             mutant(
+                "range_check.modp_predictor",
+                "range_check",
+                MutationOperator::DropConstraint,
+                "drop the block-path Freivalds range guard: add p to a BatchedLinear accumulator (mod-p aliasing on the predictor path)",
+            ),
+            mutant(
                 "tensor_memory.break_wiring",
                 "tensor_memory",
                 MutationOperator::DropConstraint,
@@ -166,6 +216,7 @@ impl MutationCampaign for SoundnessCampaign {
     fn is_killed(&self, mutant: &Mutant) -> bool {
         match mutant.id.as_str() {
             "range_check.modp_accumulator" => modp_accumulator_rejected(),
+            "range_check.modp_predictor" => modp_predictor_batched_rejected(),
             "tensor_memory.break_wiring" => wiring_tamper_rejected(),
             "requant.tamper_output" => tampered_op_rejected(|r| matches!(r, OpRecord::Requant(_))),
             "activation_lookup.tamper_output" => {
@@ -190,8 +241,8 @@ mod tests {
     fn soundness_campaign_kills_every_mutant() {
         let report = run_campaign(&SoundnessCampaign, &[]);
         assert!(
-            report.total >= 5,
-            "campaign must cover the soundness checks"
+            report.total >= 7,
+            "campaign must cover the soundness checks (incl. the predictor path)"
         );
         assert!(
             report.soundness_critical_survivors().is_empty(),

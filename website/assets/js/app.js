@@ -21,8 +21,9 @@
   }
   const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // --- reveal on scroll ---
-  const revealTargets = $$(".section-head, .card, .flow-step, .crate, .start-card, .stat, .tiers, .compare, .frei");
+  // --- reveal on scroll (interactive boards and card grids only; headings and
+  // hero content are visible immediately, never gated on a scroll transition) ---
+  const revealTargets = $$(".card, .flow-step, .crate, .start-card, .tiers, .compare, .frei");
   revealTargets.forEach((el) => el.classList.add("reveal"));
   if ("IntersectionObserver" in window) {
     const io = new IntersectionObserver(
@@ -174,17 +175,30 @@
     renderCheck();
   }
 
-  // --- tier tabs ---
+  // --- tier tabs (ARIA tabs pattern: click + arrow keys, roving tabindex) ---
   const tabs = $$(".tier-tab");
   if (tabs.length) {
-    tabs.forEach((tab) => tab.addEventListener("click", () => {
+    const select = (tab) => {
       const tier = tab.dataset.tier;
       tabs.forEach((t) => {
         const on = t === tab;
         t.classList.toggle("is-active", on);
         t.setAttribute("aria-selected", on ? "true" : "false");
+        t.setAttribute("tabindex", on ? "0" : "-1");
       });
       $$(".tier-panel").forEach((p) => p.classList.toggle("is-active", p.dataset.tier === tier));
-    }));
+    };
+    tabs.forEach((tab, i) => {
+      tab.setAttribute("tabindex", tab.classList.contains("is-active") ? "0" : "-1");
+      tab.addEventListener("click", () => select(tab));
+      tab.addEventListener("keydown", (e) => {
+        const delta = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: tabs.length - 1 - i }[e.key];
+        if (delta === undefined) return;
+        e.preventDefault();
+        const next = tabs[(i + delta + tabs.length) % tabs.length];
+        select(next);
+        next.focus();
+      });
+    });
   }
 })();

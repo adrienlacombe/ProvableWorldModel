@@ -15,6 +15,21 @@ entry.
 
 ### Security
 
+- **Per-buffer range enforcement on the exact-recompute path** (#180): the
+  verifier now rejects — with the typed `VerifyError::BufferRange` /
+  `VerifyError::InputRange` — any prover-supplied value outside the single-M31
+  envelope `[-P_HALF, P_HALF]` before computing on it: every exactly-recomputed
+  op's claimed output (flat trace and block paths), every seeded block input
+  buffer, and every proof-carried quantization parameter (`zero_point`,
+  `clamp_lo/hi`, `one`). The data-dependent kernels (`predictor::matmul`,
+  `layernorm` variance, `softmax` exp sum and `e·one` products) now accumulate
+  in `i128` with explicit envelope bound checks (mirroring
+  `fixed_point::finish`), and `ActivationTable::eval` computes its index in
+  `i128`, so an adversarial buffer or table can no longer wrap `i64` arithmetic
+  into a fail-closed **panic** (under `overflow-checks`) — it is rejected
+  cleanly. Narrows verifier acceptance; no honest proof regresses (full suite
+  plus the real-dims predictor test stay green).
+
 - **The predictor bundle is now commitment-chained to the export** (#188): the
   Python export emits, in `lewm_predictor.json`, a predictor-scoped
   `weights_root` computed over exactly the 30 proven block tensors in the Rust
@@ -29,6 +44,15 @@ entry.
   vector and the full predictor weight scheme are pinned on both sides.
 
 ### Changed
+
+- Polished the explainer site against the Impeccable design guidelines: removed
+  the AI-default scaffolding (per-section uppercase eyebrow kickers, side-stripe
+  accent borders, hero metric boxes, decorative card chips), swapped the body
+  face from Inter to Archivo, and fixed real defects found while verifying in a
+  browser — grid blowouts that caused horizontal page scroll (`.start`, `.arch`),
+  a tamper switch that could not be toggled from the keyboard, the closed mobile
+  menu remaining in the tab order, a focus ring that reshaped pill buttons, and
+  missing arrow-key navigation on the tier tabs.
 
 - **The `prove-predictor` demo path is now commitment-bound** (#187): the full
   6-block predictor (synthetic and `--profile real`) routes through
@@ -75,6 +99,15 @@ entry.
 
 ### Fixed
 
+- Closed the remaining block-path test-coverage gaps (#181): `Requant` was the
+  one `BlockOp` variant without a tampered-output reject test (all 12 now
+  reject a bumped claimed output with the exact typed error and `op_id`); the
+  small-dims predictor accept tests now pin the exact integer output vector
+  (not just `is_ok` + float tolerance), locking the quantized semantics
+  end-to-end; and the soundness mutation campaign gained a
+  `range_check.modp_predictor` mutant — the mod-`p` accumulator-aliasing
+  forgery on a `BatchedLinear` accumulator — so the predictor/block path's
+  Freivalds range guard is merge-gated like the flat demo path's.
 - The soundness mutation campaign registered no mutant for the `tensor_memory`
   (op-to-op wiring) component, so its merge gate passed vacuously; it now exercises
   a `WiringMismatch` mutant. The committed `requantize` golden fixture is now run
