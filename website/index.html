@@ -8,13 +8,15 @@
   <meta property="og:title" content="ProvableWorldModel" />
   <meta property="og:description" content="Cryptographic proof that a quantized JEPA world model planned exactly as claimed. Freivalds checks plus exact integer replay, no proving circuit." />
   <meta property="og:type" content="website" />
+  <meta name="theme-color" content="#080b16" />
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="assets/css/style.css" />
 </head>
 <body>
+  <a class="skip-link" href="#top">Skip to content</a>
   <header class="nav" id="nav">
     <a class="brand" href="#top">
       <span class="brand-mark" aria-hidden="true"></span>
@@ -38,7 +40,7 @@
       <div class="hero-grid" aria-hidden="true"></div>
       <div class="hero-inner">
         <p class="eyebrow">commit and audit, not a proving circuit</p>
-        <h1>Prove a world model<br />planned exactly as claimed.</h1>
+        <h1>Prove a world model planned exactly as claimed.</h1>
         <p class="lede">
           ProvableWorldModel lets anyone verify, on a CPU with no floating point, that a
           committed quantized JEPA world model was run exactly as specified: rolling out
@@ -53,11 +55,11 @@
           <a class="btn btn-ghost" href="#start">Run the demo</a>
           <a class="btn btn-ghost" href="https://github.com/AbdelStark/ProvableWorldModel" target="_blank" rel="noopener">Source</a>
         </div>
-        <div class="hero-stats">
-          <div class="stat"><span class="stat-num">2^-44</span><span class="stat-label">soundness error at 10^5 checks</span></div>
-          <div class="stat"><span class="stat-num">no_std</span><span class="stat-label">float-free verifier</span></div>
-          <div class="stat"><span class="stat-num">0</span><span class="stat-label">proving circuits</span></div>
-        </div>
+        <p class="hero-facts">
+          <span class="fact"><code>2&#8315;&#8308;&#8308;</code> soundness error at 10&#8309; checks</span>
+          <span class="fact"><code>no_std</code> float-free verifier</span>
+          <span class="fact">zero proving circuits</span>
+        </p>
         <p class="honesty">
           <strong>What it does not claim.</strong> It proves an exact arithmetic relation.
           It does not claim floating-point or PyTorch equivalence, the physical truth of
@@ -70,7 +72,6 @@
     <!-- WHY -->
     <section class="band" id="why">
       <div class="section-head">
-        <span class="kicker">the problem</span>
         <h2>If a model planned your robot's next move, can you check it told the truth?</h2>
       </div>
       <div class="why-cols">
@@ -92,7 +93,6 @@
     <!-- HOW: animated flow -->
     <section class="band alt" id="how">
       <div class="section-head">
-        <span class="kicker">how it works</span>
         <h2>From a checkpoint to an accepted proof, or a rejection.</h2>
         <p class="section-sub">The end to end flow at a glance below, then press play to walk it step by step. Flip the tamper switch to forge a matmul and watch the verifier catch it.</p>
       </div>
@@ -138,7 +138,7 @@
               <li class="pflow-card pflow-card--emph">
                 <span class="pflow-n">5</span>
                 <h4>Prove</h4>
-                <p>Exact integer inference of the full 6 block, 16 head, 192 dim predictor (2,437 ops): AdaLN zero, multi head attention, GELU FFN, gated residuals. Merkle commit the trace, Fiat Shamir squeeze the Freivalds challenge <code>r</code>.</p>
+                <p>Exact integer inference of the full 6-block, 16-head, 192-dim predictor (2,437 ops): AdaLN-zero, multi-head attention, GELU FFN, gated residuals. Merkle-commit the trace, Fiat-Shamir squeeze the Freivalds challenge <code>r</code>.</p>
               </li>
             </ol>
           </div>
@@ -254,7 +254,6 @@
     <!-- FREIVALDS interactive -->
     <section class="band" id="freivalds">
       <div class="section-head">
-        <span class="kicker">the core trick, live</span>
         <h2>Freivalds: check a matmul without redoing it.</h2>
         <p class="section-sub">
           For a linear layer <code>z = W&middot;x</code> the verifier draws a random
@@ -302,7 +301,6 @@
     <!-- CONCEPTS -->
     <section class="band alt" id="concepts">
       <div class="section-head">
-        <span class="kicker">the ideas</span>
         <h2>Six pieces, no magic.</h2>
       </div>
       <div class="cards">
@@ -318,7 +316,6 @@
     <!-- TIERS -->
     <section class="band" id="tiers">
       <div class="section-head">
-        <span class="kicker">what gets proven</span>
         <h2>Statement tiers, from one step to a full plan.</h2>
       </div>
       <div class="tiers">
@@ -362,7 +359,6 @@
     <!-- COMPARE -->
     <section class="band alt" id="compare">
       <div class="section-head">
-        <span class="kicker">lineage</span>
         <h2>What changed from CommitLLM.</h2>
         <p class="section-sub">This project reuses CommitLLM's Freivalds plus exact-replay audit and adapts it from language models to a quantized world model.</p>
       </div>
@@ -384,7 +380,6 @@
     <!-- ARCHITECTURE -->
     <section class="band" id="architecture">
       <div class="section-head">
-        <span class="kicker">the code</span>
         <h2>Five small crates, one trust anchor.</h2>
       </div>
       <div class="arch">
@@ -407,7 +402,6 @@
     <!-- START -->
     <section class="band alt" id="start">
       <div class="section-head">
-        <span class="kicker">try it</span>
         <h2>Run the whole game in one command.</h2>
       </div>
       <div class="start">

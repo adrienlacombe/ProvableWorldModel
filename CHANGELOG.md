@@ -30,6 +30,15 @@ entry.
 
 ### Changed
 
+- Polished the explainer site against the Impeccable design guidelines: removed
+  the AI-default scaffolding (per-section uppercase eyebrow kickers, side-stripe
+  accent borders, hero metric boxes, decorative card chips), swapped the body
+  face from Inter to Archivo, and fixed real defects found while verifying in a
+  browser — grid blowouts that caused horizontal page scroll (`.start`, `.arch`),
+  a tamper switch that could not be toggled from the keyboard, the closed mobile
+  menu remaining in the tab order, a focus ring that reshaped pill buttons, and
+  missing arrow-key navigation on the tier tabs.
+
 - **The `prove-predictor` demo path is now commitment-bound** (#187): the full
   6-block predictor (synthetic and `--profile real`) routes through
   `pwm_prover::prove_predictor` → `PredictorArtifact` and is verified by
