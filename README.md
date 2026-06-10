@@ -1,6 +1,7 @@
 # ProvableWorldModel
 
 [![CI](https://github.com/AbdelStark/ProvableWorldModel/actions/workflows/ci.yml/badge.svg)](https://github.com/AbdelStark/ProvableWorldModel/actions/workflows/ci.yml)
+[![Real E2E](https://github.com/AbdelStark/ProvableWorldModel/actions/workflows/real-e2e.yml/badge.svg)](https://github.com/AbdelStark/ProvableWorldModel/actions/workflows/real-e2e.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable%20(MSRV%201.85)-orange.svg)](rust-toolchain.toml)
 [![verifier](https://img.shields.io/badge/verifier-no__std%20%C2%B7%20float--free-5eead4.svg)](crates/pwm-verifier)
@@ -88,6 +89,14 @@ real weights):
 ```bash
 docker compose --profile real up --build export predictor-real   # or ./demo/run-real.sh
 ```
+
+The same real checkpoint path is also covered by the `Real E2E` GitHub Actions
+workflow. It builds the exporter and prover images, downloads the
+`quentinll/lewm-pusht` checkpoint plus a `lerobot/pusht` episode, exports the
+bundle, runs `pwm --json prove-predictor /shared/lewm_predictor.json`, checks that
+the proof is accepted and export-bound, and uploads the logs and bundles. It is a
+separate on-demand and weekly workflow because it depends on external assets and
+a large PyTorch image.
 
 Without Docker:
 

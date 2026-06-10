@@ -72,6 +72,11 @@ the action encoder**, quantizes the full 192-dim V0 subgraph, and proves the
 predictor on the real weights and the real inputs. Heavy: it pulls a PyTorch image
 and downloads a ~70 MB checkpoint the first time.
 
+The same export plus proof path runs in the `Real E2E` GitHub Actions workflow on
+demand, weekly on `main`, and on PRs that touch the real export/prove surface.
+That hosted job validates the JSON proof result is accepted, export-bound, and
+within the bundle's measured float-faithfulness tolerance.
+
 Stage 1/2, the **export service** (PyTorch), loads the real checkpoint and logs it:
 
 ```

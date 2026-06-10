@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Hosted real-checkpoint smoke for the public demo path. This is separate from
+# the merge-gate CI because it downloads external Hugging Face assets and builds
+# a PyTorch image. It runs on demand, weekly on main, and on PRs that touch the
+# real export/prove surface.
+name: Real E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/real-e2e.yml"
+      - "docker-compose.yml"
+      - "Dockerfile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pwm-core/**"
+      - "crates/pwm-export/**"
+      - "crates/pwm-prover/**"
+      - "crates/pwm-testkit/**"
+      - "crates/pwm-verifier/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  real-checkpoint:
+    name: Real checkpoint inference + proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      COMPOSE_PROJECT_NAME: pwmreale2e${{ github.run_id }}
+      NO_COLOR: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Build real-export and prover images
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-artifacts
+          docker compose --profile real build export predictor-real 2>&1 | tee e2e-artifacts/build.log
+
+      - name: Export real checkpoint bundle
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-artifacts
+          docker compose --profile real up --no-build --exit-code-from export export 2>&1 | tee e2e-artifacts/export.log
+
+      - name: Prove and verify exported predictor bundle
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-artifacts
+          docker compose --profile real run --rm -T --no-deps predictor-real \
+            --json prove-predictor /shared/lewm_predictor.json 2>&1 | tee e2e-artifacts/predictor-real.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("e2e-artifacts/predictor-real.json")
+          raw = path.read_text()
+          start = raw.find("{")
+          if start < 0:
+              raise SystemExit("predictor output did not contain JSON")
+          result = json.loads(raw[start:])
+          if result.get("accepted") is not True:
+              raise SystemExit("real predictor proof was not accepted")
+          if result.get("weights_root_source") != "export-bundle":
+              raise SystemExit("real predictor proof was not bound to the export bundle")
+          err = result.get("float_error")
+          tol = result.get("float_tolerance")
+          if err is None or tol is None:
+              raise SystemExit("real predictor proof did not report float faithfulness")
+          if float(err) > float(tol):
+              raise SystemExit(f"float error {err} exceeds tolerance {tol}")
+          print(f"accepted=true weights_root_source=export-bundle float_error={err} float_tolerance={tol}")
+          PY
+
+      - name: Copy exported bundle artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-artifacts
+          if ! docker volume inspect "${COMPOSE_PROJECT_NAME}_lewm" >/dev/null 2>&1; then
+            echo "no compose volume found; export likely failed before writing bundles"
+            exit 0
+          fi
+          docker run --rm \
+            -v "${COMPOSE_PROJECT_NAME}_lewm:/shared:ro" \
+            -v "$PWD/e2e-artifacts:/out" \
+            busybox:1.36 sh -c '
+              cp /shared/lewm_predictor.json /out/lewm_predictor.json 2>/dev/null || true
+              cp /shared/lewm_pred_proj.json /out/lewm_pred_proj.json 2>/dev/null || true
+              ls -lh /out
+            '
+
+      - name: Upload e2e logs and bundles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: real-e2e-${{ github.run_id }}
+          path: e2e-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Cleanup compose resources
+        if: always()
+        run: docker compose --profile real down --volumes --remove-orphans
