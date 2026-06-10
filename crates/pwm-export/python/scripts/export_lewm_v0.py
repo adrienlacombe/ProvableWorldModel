@@ -9,12 +9,12 @@ with power-of-two scales, folds the `pred_proj` BatchNorm into the preceding
 Linear, asserts the spec-2 dims (192/3/6/16/64/2048), and emits:
 
 1. the committed manifest (model / quantization / graph commitments), and
-2. a JSON bundle the Rust prover ingests to prove + verify the `pred_proj` head
-   (`Linear -> GELU -> Linear`) on a real latent, with the real folded weights.
+2. a JSON bundle the Rust prover ingests to prove + verify the full 6-block
+   predictor on a real latent/action input, with calibrated activation tables
+   and a predictor-scoped weight commitment.
 
-The full 6-block attention predictor is quantized and committed here; proving it
-end to end in the Rust prover is the next integration step (the op kernels exist;
-it needs the 16-head 6-block graph wired and its activation scales calibrated).
+The `pred_proj` head bundle is still emitted as a compact smoke artifact, but the
+main demo path is the commitment-bound full predictor bundle.
 
 Usage:
     pip install torch numpy
@@ -34,7 +34,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pwm_export import export, fold, quantize
+from pwm_export import canonical, export, fold, predictor_quant, quantize
 
 DIM, HEADS, DIM_HEAD, MLP, DEPTH, HIST = 192, 16, 64, 2048, 6, 3
 INNER = HEADS * DIM_HEAD  # 1024
@@ -109,6 +109,20 @@ def v0_linears(sd: dict) -> dict:
     out["pred_proj.fc1"] = w0f
     out["pred_proj.fc2"] = sd["pred_proj.net.3.weight"]
     return out
+
+
+def predictor_float_blocks(sd: dict) -> list[dict]:
+    blocks = []
+    for i in range(DEPTH):
+        p = f"predictor.transformer.layers.{i}"
+        blocks.append({
+            "qkv": sd[f"{p}.attn.to_qkv.weight"],
+            "out": sd[f"{p}.attn.to_out.0.weight"],
+            "fc1": sd[f"{p}.mlp.net.1.weight"],
+            "fc2": sd[f"{p}.mlp.net.4.weight"],
+            "adaln": sd[f"{p}.adaLN_modulation.1.weight"],
+        })
+    return blocks
 
 
 def quantize_to_dict(name: str, w: np.ndarray, idx: int) -> tuple[dict, dict]:
@@ -219,20 +233,6 @@ def main() -> None:
     }
     Path(out_path).write_text(json.dumps(bundle))
 
-    # --- Full predictor bundle: the real 6-block, 16-head attention predictor. ---
-    def q8(w: np.ndarray) -> list:
-        return quantize.quantize_array(w)[0]
-    blocks = []
-    for i in range(DEPTH):
-        p = f"predictor.transformer.layers.{i}"
-        blocks.append({
-            "qkv": q8(sd[f"{p}.attn.to_qkv.weight"]),
-            "out": q8(sd[f"{p}.attn.to_out.0.weight"]),
-            "fc1": q8(sd[f"{p}.mlp.net.1.weight"]),
-            "fc2": q8(sd[f"{p}.mlp.net.4.weight"]),
-            "adaln": q8(sd[f"{p}.adaLN_modulation.1.weight"]),
-        })
-
     # --- ENCODE the model inputs (latent history + action). ---
     # Inputs, in order of preference:
     #   LEWM_LEROBOT=1  consistent real (observation, action) from a lerobot/pusht
@@ -248,8 +248,8 @@ def main() -> None:
         frames, a10, n = lerobot_pusht.load_episode(history=HIST, frameskip=5)
         emb = encode.encode_observation(tsd, frames)
         act_emb = encode.encode_action(tsd, torch.tensor(a10)).numpy()
-        x_q = quantize.quantize_array(emb.flatten())[0]
-        c_q = quantize.quantize_array(act_emb.flatten())[0]
+        x_float = np.asarray(emb, dtype=np.float64).flatten()
+        c_float = np.asarray(act_emb, dtype=np.float64).flatten()
         input_source = (f"real PushT expert episode (lerobot/pusht): {n} frames @ frameskip 5 "
                         f"-> ViT encoder; real 2D action + agent state")
     elif gif and Path(gif).exists():
@@ -257,22 +257,42 @@ def main() -> None:
         tsd = torch.load(os.environ.get("LEWM_WEIGHTS", "weights.pt"),
                          map_location="cpu", weights_only=True)
         emb, act_emb, n_frames = encode.encode_history(tsd, gif, HIST, action_dim=10)
-        x_q = quantize.quantize_array(emb.flatten())[0]
-        c_q = quantize.quantize_array(act_emb.flatten())[0]
+        x_float = np.asarray(emb, dtype=np.float64).flatten()
+        c_float = np.asarray(act_emb, dtype=np.float64).flatten()
         input_source = (f"real PushT observation: {HIST} frames from {Path(gif).name} "
                         f"({n_frames} total) -> ViT encoder -> projector (action is a stand-in)")
     else:
-        x_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
-        c_q = quantize.quantize_array(rng.standard_normal(HIST * DIM))[0]
+        x_float = rng.standard_normal(HIST * DIM)
+        c_float = rng.standard_normal(HIST * DIM)
         input_source = "synthetic quantized latents (set LEWM_LEROBOT=1 for real obs+action)"
     t_encode = time.perf_counter() - t
+
+    # --- CALIBRATE the full predictor proof relation. ---
+    t = time.perf_counter()
+    pred_dims = predictor_quant.PredictorDims(DIM, HIST, HEADS, DIM_HEAD, MLP, DEPTH)
+    fblocks = predictor_float_blocks(sd)
+    pred_quant, blocks, x_q, c_q, _tables = predictor_quant.bundle_quant(
+        pred_dims, fblocks, x_float, c_float
+    )
+    t_calib = time.perf_counter() - t
+
+    # --- Predictor-scoped weight commitment: chain the bundle to the prover. ---
+    # predictor_weight_dicts mirrors the Rust prover's tensor registration
+    # (lewm_predictor.rs Builder::weight) exactly; the Rust side binds this
+    # carried root into the model commitment, so verification fails unless the
+    # proven weights reproduce it bit-for-bit.
+    pred_weights = export.predictor_weight_dicts(blocks, DIM, HEADS, DIM_HEAD, MLP)
+    pred_weights_root = canonical.weights_root(pred_weights).hex()
+
     pred_bundle = {
         "model": "lewm-pusht full predictor (6 blocks, 16 heads), real quantized weights",
         "input_source": input_source,
         "dims": {"d": DIM, "s": HIST, "h": HEADS, "dh": DIM_HEAD, "mlp": MLP, "depth": DEPTH},
+        "weights_root": pred_weights_root,
         "x": x_q,
         "c": c_q,
         "blocks": blocks,
+        "quant": pred_quant,
     }
     Path(pred_path).write_text(json.dumps(pred_bundle))
 
@@ -281,10 +301,19 @@ def main() -> None:
     log("z_history", f"[{HIST}x{DIM}] -> int8 ({len(x_q)} values)")
     log("action", f"[{HIST}x{DIM}] -> int8 ({len(c_q)} values)  in {_ms(t_encode)}")
 
+    stage("CALIBRATE", "real activation tables and float-faithful tolerance")
+    log("scales", f"f_x={pred_quant['f_x']} f_c={pred_quant['f_c']} f_ln={pred_quant['f_ln']} "
+        f"f_qkv={pred_quant['f_qkv']} f_score={pred_quant['f_score']}")
+    log("tables", "SiLU, GELU, inverse-sqrt, softmax-exp committed in the bundle")
+    log("error", f"max |int - float| = {pred_quant['error']:.6g} "
+        f"(tolerance {pred_quant['tolerance']:.6g}) in {_ms(t_calib)}")
+
     # --- BUNDLE the prover-ingestible artifacts. ---
     stage("BUNDLE", "the prover-ingestible artifacts")
     log("pred_proj", f"head bundle  {_human_bytes(Path(out_path).stat().st_size)} -> {out_path}")
     log("predictor", f"full bundle  {_human_bytes(Path(pred_path).stat().st_size)} -> {pred_path}")
+    log("bind", f"predictor weights_root {pred_weights_root[:32]}...  "
+        "(carried in the bundle; the prover must reproduce it bit-for-bit)")
     log("calib", f"requant shifts fc1={fc1_shift}, fc2={fc2_shift}")
     log("prove", f"pwm prove-predictor {pred_path}")
 

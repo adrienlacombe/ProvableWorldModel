@@ -13,6 +13,21 @@ entry.
 
 ## [Unreleased]
 
+### Security
+
+- **The predictor bundle is now commitment-chained to the export** (#188): the
+  Python export emits, in `lewm_predictor.json`, a predictor-scoped
+  `weights_root` computed over exactly the 30 proven block tensors in the Rust
+  prover's canonical `tensor_id` order (`pwm_export.export.predictor_weight_dicts`),
+  and the prover binds that *carried* value into the model commitment
+  (`prove_predictor_with_weights_root`), so `verify_predictor` rejects with
+  `CommitmentMismatch(Model)` unless the proven weights reproduce the export's
+  commitment bit-for-bit. The artifact alone now certifies which weight set was
+  proven (bundle ⇄ export bound; checkpoint ⇄ export remains trusted
+  preprocessing — documented in README and specs §13). The Python↔Rust
+  canonical-encoding parity gate is now two-way: the multi-leaf `weights_root`
+  vector and the full predictor weight scheme are pinned on both sides.
+
 ### Changed
 
 - **The `prove-predictor` demo path is now commitment-bound** (#187): the full

@@ -18,12 +18,12 @@ pub fn quantize_nonlinearity<F: Fn(f64) -> f64>(
     table_id: u32,
     lo: i64,
     hi: i64,
-    in_frac: u32,
-    out_frac: u32,
+    in_frac: i32,
+    out_frac: i32,
     f: F,
 ) -> ActivationTable {
-    let in_scale = 2f64.powi(-(in_frac as i32));
-    let out_scale = 2f64.powi(out_frac as i32);
+    let in_scale = 2f64.powi(-in_frac);
+    let out_scale = 2f64.powi(out_frac);
     let outputs = (lo..=hi)
         .map(|q| {
             let real_in = q as f64 * in_scale;
@@ -50,23 +50,23 @@ pub fn silu(x: f64) -> f64 {
 }
 
 /// Generate the GELU table over `[lo, hi]` at the given fractional bits.
-pub fn gelu_table(table_id: u32, lo: i64, hi: i64, in_frac: u32, out_frac: u32) -> ActivationTable {
+pub fn gelu_table(table_id: u32, lo: i64, hi: i64, in_frac: i32, out_frac: i32) -> ActivationTable {
     quantize_nonlinearity(table_id, lo, hi, in_frac, out_frac, gelu)
 }
 
 /// Generate the SiLU table over `[lo, hi]`.
-pub fn silu_table(table_id: u32, lo: i64, hi: i64, in_frac: u32, out_frac: u32) -> ActivationTable {
+pub fn silu_table(table_id: u32, lo: i64, hi: i64, in_frac: i32, out_frac: i32) -> ActivationTable {
     quantize_nonlinearity(table_id, lo, hi, in_frac, out_frac, silu)
 }
 
 /// Generate the softmax exp table `e^x` over `[lo, 0]` (inputs are score − max ≤ 0).
-pub fn exp_table(table_id: u32, lo: i64, in_frac: u32, out_frac: u32) -> ActivationTable {
+pub fn exp_table(table_id: u32, lo: i64, in_frac: i32, out_frac: i32) -> ActivationTable {
     quantize_nonlinearity(table_id, lo, 0, in_frac, out_frac, f64::exp)
 }
 
 /// Generate the inverse-sqrt table `1/√x` over `[1, hi]` (variance ≥ 1; the
 /// exporter folds `eps` into the domain offset).
-pub fn inv_sqrt_table(table_id: u32, hi: i64, in_frac: u32, out_frac: u32) -> ActivationTable {
+pub fn inv_sqrt_table(table_id: u32, hi: i64, in_frac: i32, out_frac: i32) -> ActivationTable {
     quantize_nonlinearity(table_id, 1, hi, in_frac, out_frac, |x| 1.0 / x.sqrt())
 }
 

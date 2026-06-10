@@ -24,9 +24,12 @@ one honest hole CommitLLM leaves open: non-reproducible attention.
 
 ### What it does not claim
 
-It proves an exact arithmetic relation. It does not claim floating-point or PyTorch
-equivalence, the physical truth of the predictions, or zero knowledge. Public
-claims must be a subset of the proven statement.
+It proves an exact integer arithmetic relation. For predictor bundles, the export
+also carries a float reference output and a measured tolerance, and the demo CLI
+checks the verified integer output against that bound. The verifier still does
+not prove the full PyTorch program, the physical truth of the predictions, zero
+knowledge, or that the checkpoint bytes were exported honestly. Public claims
+must be a subset of the proven statement.
 
 ## Quickstart
 
@@ -64,11 +67,13 @@ ProvableWorldModel  commit-and-audit over the le-wm world model
   ├ witness  689,760 claimed op outputs (5.26 MiB)  trace_root 56bc38fc...
   └ bind     absorbed model + inputs + trace, then squeezed the Freivalds r (non-adaptive)
 
-[stage 4/5] VERIFY  no_std, float-free, never re-runs the model
+[stage 4/5] VERIFY  no_std, float-free, commitment-bound, never re-runs the model
+  ├ binding  recomputed model, quantization, planner, input + output commitments
   ├ challenge derived the Freivalds r for 30 linear projections
   ├ checks   Freivalds v·x == r·z  (soundness ≤ 1/p, p = 2⁶¹−1; union over the checks ~2⁻⁴⁴)
   │          exact recompute of attention, softmax, GELU, LayerNorm, residuals
-  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; audits arithmetic only)
+  ├ faith    max |int - float| <= bundle tolerance  (offline reference from the export bundle)
+  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; commitments + arithmetic audited)
 
 [stage 5/5] TAMPER  forge one matmul output
   └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
@@ -131,6 +136,7 @@ ProvableWorldModel  export the real le-wm checkpoint into the prover
 [QUANTIZE]  34 matrices -> 11,705,856 int8 params   (float32 44.7 MiB -> int8 11.2 MiB, 4.0x smaller)
 [COMMIT]    model_commitment / quantization_commitment / graph_commitment  (Blake2s-256)
 [ENCODE]    real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action
+[CALIBRATE] real SiLU/GELU/inverse-sqrt/softmax-exp tables + measured predictor tolerance
 ```
 
 The prover then runs the exact-integer inference on those real weights and audits it:
@@ -148,8 +154,9 @@ The prover then runs the exact-integer inference on those real weights and audit
   ├ latency  forward pass in 49.0 ms  (49.7 Kop/s, 661 MMAC/s)
   └ z_next   [11, 55, 32, -73, -57, 13]  (predicted next-latent head, from the real forward pass)
 
-[stage 4/5] VERIFY  no_std, float-free, never re-runs the model
-  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; audits arithmetic only)
+[stage 4/5] VERIFY  no_std, float-free, commitment-bound, never re-runs the model
+  ├ faith    max |int - float| <= bundle tolerance  (offline reference from the export bundle)
+  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; commitments + arithmetic audited)
 
 [stage 5/5] TAMPER  forge one matmul output
   └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
@@ -161,7 +168,14 @@ A real expert episode (consistent observation and action) goes through the
 checkpoint's own encoders to produce the latent history and action embedding the
 predictor consumes. The encode is the trusted offline step (the image encoder is
 P4-deferred for proving), and the predictor step is what the no_std verifier
-audits. The action is the real 2D expert control plus the agent state; the full
+audits. The bundle also carries the export-computed `weights_root` over the 30
+proven block tensors; the prover binds that carried value into the model
+commitment, so the verifier rejects unless the proven weights reproduce the
+export's commitment bit-for-bit (bundle ⇄ export bound; checkpoint ⇄ export
+trusted). The same bundle carries the calibrated SiLU, GELU, inverse-sqrt, and
+softmax-exp tables plus the float predictor output on the same encoded input; the
+CLI checks the verified integer `z_next` against the bundle's measured tolerance.
+The action is the real 2D expert control plus the agent state; the full
 le-wm 10-dim action layout lives in the 13 GB lewm-pusht dataset.
 
 The predictor is built as the real le-wm architecture over the named-buffer block
@@ -208,7 +222,7 @@ and exactly recomputes the attention, softmax, GELU, LayerNorm, and residuals.
 +============================+===============================================+
 |                            v        VERIFIER  (no_std / float-free)        |
 |  +------------------------------------------------------------+            |
-|  | VERIFY  (NEVER re-runs the model; audits arithmetic only)  |            |
+|  | VERIFY  (NEVER re-runs the model; audits bindings + trace) |            |
 |  | replay transcript; Freivalds-check every fixed matmul:     |            |
 |  | v.x == r.z  because  rT(W x) = (rT W) x                    |            |
 |  | soundness err <= 1/p, p = 2^61-1;                          |            |
@@ -227,7 +241,8 @@ and exactly recomputes the attention, softmax, GELU, LayerNorm, and residuals.
 +============================================================================+
 
 exact integer fixed point makes attention reproducible: the one hole
-CommitLLM leaves open is closed here. The verifier audits arithmetic only.
+CommitLLM leaves open is closed here. The verifier audits the committed
+statement and the exact arithmetic trace.
 ```
 
 The prover runs the model normally and commits to its execution trace. The
@@ -278,9 +293,10 @@ and reject tests. The exporter ingests the real `quentinll/lewm-pusht` checkpoin
 and quantizes the full 192-dim V0 subgraph, and the Rust prover proves and
 verifies the full 6-block, 16-head, 192-dim predictor with the real quantized
 weights (`pwm prove-predictor`), plus the `pred_proj` head on its own
-(`pwm prove-lewm`). The proof attests the exact integer (quantized) relation;
-per-tensor activation-scale calibration for float-faithful outputs is a further
-refinement. For P2, all `S` candidate costs must be proven, not only the winner:
+(`pwm prove-lewm`). The proof attests the exact integer (quantized) relation, and
+predictor bundles now include calibrated activation tables plus an offline
+float-reference tolerance that the CLI enforces after verification. For P2, all
+`S` candidate costs must be proven, not only the winner:
 proving only the selected candidate would be unsound.
 
 Binding status, precisely: both the P0 feed-forward statement (`AuditArtifact`) and
@@ -294,6 +310,19 @@ input and the committed block witness (the block Merkle root, which commits ever
 claimed accumulator) before any challenge is squeezed, so the challenge is
 statement-bound and non-adaptive. A bare `verify_block` still exists for standalone
 arithmetic audits; the committed relation is the one to use for a real statement.
+
+The trust boundary, exactly: **bundle ⇄ export is cryptographically bound;
+checkpoint ⇄ export is trusted preprocessing.** The export computes a
+predictor-scoped `weights_root` over exactly the proven block tensors (in the
+prover's canonical `tensor_id` order) and carries it in the bundle; the prover
+binds that carried value, not a recomputed one, into the model commitment, so
+`verify_predictor` accepts only if the proven weights reproduce the export's
+commitment bit-for-bit (`CommitmentMismatch(Model)` otherwise). The artifact alone
+therefore certifies *which* weight set was proven, with no out-of-band weights.
+What remains trusted is the export step itself: that the quantized tensors
+faithfully derive from the `quentinll/lewm-pusht` checkpoint bytes (download,
+float-to-int8 quantization, and input encoding are offline preprocessing, outside
+the proven relation).
 
 ## Architecture
 

@@ -179,6 +179,36 @@ fn weights_root_changes_with_a_leaf_and_handles_edges() {
 }
 
 #[test]
+fn weights_root_multi_leaf_parity_vector_is_pinned() {
+    // The cross-language parity vector: predictor-style tensors (ids 1000..,
+    // scale_id 0, int8 bounds; three leaves exercise the odd-level node
+    // duplication). The Python exporter pins the same hex in
+    // crates/pwm-export/python/tests/test_canonical_parity.py
+    // (test_predictor_weights_root_matches_rust), so the gate is two-way: a
+    // change to either side's encoding breaks its own pin.
+    let shaped = |id: u32, shape: &[u32], vals: &[i64]| {
+        let data = vals
+            .iter()
+            .map(|&v| BoundedInt::new(v, -128, 127).unwrap())
+            .collect();
+        Tensor::new(id, shape.to_vec(), 0, data).unwrap()
+    };
+    let w = [
+        shaped(1000, &[1, 2], &[1, -2]),
+        shaped(1001, &[2, 1], &[3, 4]),
+        shaped(1002, &[2, 2], &[-5, 6, -7, 8]),
+    ];
+    let hex: String = weights_root(&w)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        hex,
+        "c666f637a30f38d653f7c6a3280e87b705777df25bae4644148b534992b03120"
+    );
+}
+
+#[test]
 fn output_commitment_binds_outputs() {
     let o1 = tensor(0, &[1, 2]);
     let o2 = tensor(1, &[3, 4]);

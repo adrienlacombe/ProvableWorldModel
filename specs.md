@@ -17,8 +17,11 @@ execution trace; a CPU verifier audits the trace with **Freivalds** checks for
 the large linear layers and **exact integer re‑execution** for everything else,
 all bound by Merkle commitments and a Fiat‑Shamir transcript.
 
-The proof attests an **exact arithmetic relation**, not float/PyTorch
-equivalence, not physical truth of predictions, not zero‑knowledge.
+The proof attests an **exact arithmetic relation**, not the full PyTorch program,
+not physical truth of predictions, not zero‑knowledge. Predictor bundles also
+carry an offline float reference output plus a measured tolerance; the demo CLI
+checks the verified integer output against that bound, but the no_std verifier
+remains float-free and verifies the integer statement only.
 
 ### 1.1 Statement tiers (unchanged from pre‑pivot)
 
@@ -32,7 +35,8 @@ equivalence, not physical truth of predictions, not zero‑knowledge.
 
 ### 1.2 Non‑goals (V0)
 
-Floating‑point/bf16/GPU equivalence; physical‑truth claims; zero‑knowledge;
+Full floating‑point/bf16/GPU equivalence beyond the predictor bundle's offline
+float-reference tolerance; physical‑truth claims; zero‑knowledge;
 the CEM sampling loop (P3); the pixel encoder (P4); training, SIGReg, BatchNorm
 *updates*, dataloading, the config framework. Proving only the winning
 candidate (unsound — all candidates must be scored). Off‑trace nonlinearities
@@ -189,8 +193,13 @@ Four phases. Phases 0–1 are offline/prove; 2–3 are the proof check.
 ### Phase 0 — Setup / export (offline, trusted)
 `pwm-export` reads the le‑wm checkpoint + config, quantizes to the integer graph,
 folds BatchNorm, emits `manifest`, weight tensors, and golden vectors. The
-parity gate requires Python ref ≡ Rust ref ≡ golden, bit‑for‑bit. Re‑export is
-byte‑identical.
+predictor bundle additionally carries a predictor‑scoped `weights_root` over the
+proven block tensors (prover `tensor_id` order) that the prover binds into the
+model commitment (bundle ⇄ export bound; checkpoint ⇄ export trusted). The same
+bundle carries calibrated SiLU, GELU, inverse-sqrt, and softmax-exp tables, the
+scale table inputs, the float reference predictor output on the encoded input,
+and the measured int-vs-float tolerance. The parity gate requires Python ref ≡
+Rust ref ≡ golden, bit‑for‑bit. Re‑export is byte‑identical.
 
 ### Phase 1 — Prove (commit)
 `pwm-prover`:
@@ -416,9 +425,20 @@ order, planner config, public input, claimed output, any trace cell) changes a
 commitment or fails an exact check → reject. INV‑BIND‑01: everything the relation
 depends on is reachable from a commitment.
 
+**Trust boundary (export chain).** Bundle ⇄ export is cryptographically bound:
+the export emits, in the predictor bundle, a `weights_root` computed over exactly
+the proven block tensors in the prover's canonical `tensor_id` order, and the
+prover binds that carried value (not a recomputed one) into the model commitment,
+so `verify_predictor` rejects (`CommitmentMismatch(Model)`) unless the proven
+weights reproduce it bit‑for‑bit. Checkpoint ⇄ export is trusted preprocessing:
+that the quantized tensors derive faithfully from the original checkpoint bytes
+is asserted by the export step, not by the proof.
+
 **Honesty boundary.** The proof attests the exact quantized relation named by
-`relation_id`. It does **not** claim float equivalence, physical truth, or ZK.
-Public claims must be a subset of the V0 statement.
+`relation_id`. For predictor bundles, the export also supplies an offline float
+reference and measured tolerance that the CLI checks after integer verification.
+It does **not** prove the full PyTorch program, physical truth, checkpoint-export
+honesty, or ZK. Public claims must be a subset of the V0 statement.
 
 **Determinism prerequisites (from le‑wm analysis).** Attention is recomputed as
 explicit `QKᵀ/√d → softmax → ·V` integer matmuls (not `F.sdpa`, whose kernel

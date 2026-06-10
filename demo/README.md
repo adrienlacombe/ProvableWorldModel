@@ -43,10 +43,12 @@ ProvableWorldModel  commit-and-audit over the le-wm world model
   ├ witness  689,760 claimed op outputs (5.26 MiB)  trace_root 56bc38fc...
   └ bind     absorbed model + inputs + trace, then squeezed the Freivalds r (non-adaptive)
 
-[stage 4/5] VERIFY  no_std, float-free, never re-runs the model
+[stage 4/5] VERIFY  no_std, float-free, commitment-bound, never re-runs the model
+  ├ binding  recomputed model, quantization, planner, input + output commitments
   ├ challenge derived the Freivalds r for 30 linear projections
   ├ checks   Freivalds v·x == r·z  (soundness ≤ 1/p, p = 2⁶¹−1; union over the checks ~2⁻⁴⁴)
-  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; audits arithmetic only)
+  ├ faith    max |int - float| <= bundle tolerance  (offline reference from the export bundle)
+  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; commitments + arithmetic audited)
 
 [stage 5/5] TAMPER  forge one matmul output
   └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
@@ -82,6 +84,7 @@ ProvableWorldModel  export the real le-wm checkpoint into the prover
 [QUANTIZE]  34 matrices -> 11,705,856 int8 params   (float32 44.7 MiB -> int8 11.2 MiB, 4.0x smaller)
 [COMMIT]    model_commitment / quantization_commitment / graph_commitment  (Blake2s-256)
 [ENCODE]    real PushT expert episode (lerobot/pusht): 3 frames @ frameskip 5 -> ViT encoder; real 2D action
+[CALIBRATE] real SiLU/GELU/inverse-sqrt/softmax-exp tables + measured predictor tolerance
 ```
 
 Stage 2/2, the **prover** (pure Rust), runs the exact-integer inference on those
@@ -99,8 +102,9 @@ real weights and the no_std verifier audits it (abridged):
   ├ latency  forward pass in 49.0 ms  (49.7 Kop/s, 661 MMAC/s)
   └ z_next   [11, 55, 32, -73, -57, 13]  (predicted next-latent head, from the real forward pass)
 
-[stage 4/5] VERIFY  no_std, float-free, never re-runs the model
-  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; audits arithmetic only)
+[stage 4/5] VERIFY  no_std, float-free, commitment-bound, never re-runs the model
+  ├ faith    max |int - float| <= bundle tolerance  (offline reference from the export bundle)
+  └ verdict  ACCEPT  in 28.6 ms  (1.7x faster than proving; commitments + arithmetic audited)
 
 [stage 5/5] TAMPER  forge one matmul output
   └ forged matmul op 2 -> REJECT FreivaldsCheckFailed { op_id: 2 }  (caught)
@@ -112,7 +116,15 @@ This is fully end to end: a **real PushT expert episode** (consistent observatio
 and action from one rollout) is encoded through the checkpoint's own encoders into
 the latent history and action embedding the predictor consumes. The export
 (download, encode, quantize, commit) is the trusted offline step; the prover runs
-the exact integer inference and the no_std verifier audits it. The action is the
+the exact integer inference and the no_std verifier audits it. The bundle carries
+the export-computed `weights_root` over the 30 proven block tensors, and the
+prover binds that carried value into the model commitment, so the verifier rejects
+unless the proven weights reproduce the export's commitment bit-for-bit
+(bundle ⇄ export cryptographically bound; checkpoint ⇄ export trusted
+preprocessing). The bundle also carries calibrated SiLU, GELU, inverse-sqrt, and
+softmax-exp tables plus the float predictor output on the same encoded input; the
+CLI checks the verified integer `z_next` against the measured tolerance. The
+action is the
 real 2D expert control plus the agent state, normalized to `[-1, 1]`; the remaining
 proprio dims (block pose) and the exact le-wm 10-dim layout live in the 13 GB
 lewm-pusht dataset, which is impractical to ship in a demo. The full image encoder
@@ -158,6 +170,8 @@ both for synthetic inputs.
 The proof attests the exact integer (quantized) relation of the committed model:
 every fixed-weight matmul is Freivalds-checked (`v.x == r.z`, error `<= 1/p` with
 `p = 2^61-1`), and the attention dot products, softmax, GELU, SiLU, LayerNorm, and
-residuals are recomputed exactly. It does not claim float/PyTorch equivalence. The
-quantization here keeps activations int8 throughout; per-tensor activation-scale
-calibration for float-faithful outputs is a further refinement.
+residuals are recomputed exactly. For predictor bundles, the export carries a
+float reference output and a measured tolerance, and the CLI checks the verified
+integer output against that bound. The no_std verifier still proves only the
+integer statement; checkpoint loading, input encoding, and float-to-int8 export
+are trusted preprocessing.

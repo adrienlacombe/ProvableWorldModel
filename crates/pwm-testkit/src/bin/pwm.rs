@@ -349,6 +349,9 @@ struct PredictorReport {
     proof_bytes: usize,
     macs: u128,
     hist: Vec<(&'static str, usize)>,
+    /// Whether the bundle carried an export-computed weights root that the model
+    /// commitment binds (vs a root the prover computed over its own weights).
+    weights_bound_to_export: bool,
     weights_root: [u8; 32],
     model_commitment: [u8; 32],
     quantization_commitment: [u8; 32],
@@ -359,6 +362,10 @@ struct PredictorReport {
     verify: std::time::Duration,
     /// Predicted next-latent head (first few entries of the verified output).
     z_out_head: Vec<i64>,
+    /// Max absolute error between verified int output and the bundle's float reference.
+    float_error: Option<f64>,
+    /// Bundle-carried tolerance for the offline float-faithfulness check.
+    float_tolerance: Option<f64>,
     /// First few entries of the quantized latent-history input.
     z_in_head: Vec<i64>,
     /// First few entries of the quantized action input.
@@ -400,8 +407,12 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
     let t0 = Instant::now();
     let (dims, circuit) = match real {
         Some(r) => {
-            let c = lewm_predictor::build_predictor_real(r.dims, r.blocks, r.x, r.c);
-            (r.dims, c)
+            let d = r.dims;
+            let c = lewm_predictor::build_predictor_bundle(r).unwrap_or_else(|e| {
+                eprintln!("bad predictor quantization: {e}");
+                exit(1);
+            });
+            (d, c)
         }
         None => {
             let d = Dims {
@@ -415,6 +426,7 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
             (d, lewm_predictor::build_predictor(d))
         }
     };
+    let weights_bound = circuit.export_weights_root.is_some();
     let params: usize = circuit.weights.iter().map(|t| t.data().len()).sum();
     let artifact = lewm_predictor::prove(&circuit).unwrap_or_else(|e| {
         eprintln!("prove failed: {e:?}");
@@ -430,6 +442,21 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
         .err()
         .map(|e| format!("{e:?}"));
     let out = res.as_ref().ok().cloned().unwrap_or_default();
+    let mut verify_err = res.err().map(|e| format!("{e:?}"));
+    let mut float_error = None;
+    let mut float_tolerance = None;
+    if verify_err.is_none() {
+        if let (Some(z_float), Some(tol)) = (circuit.z_float.as_ref(), circuit.tolerance) {
+            let err = lewm_predictor::max_float_error(&out, circuit.scheme.f_ln, z_float);
+            float_error = Some(err);
+            float_tolerance = Some(tol);
+            if err > tol {
+                verify_err = Some(format!(
+                    "FloatToleranceExceeded(error={err:.6}, tolerance={tol:.6})"
+                ));
+            }
+        }
+    }
 
     // --- MLOps metrics over the proven block ---
     let pi = &artifact.public_input;
@@ -461,6 +488,7 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
         proof_bytes: witness_vals * core::mem::size_of::<i64>(),
         macs,
         hist,
+        weights_bound_to_export: weights_bound,
         weights_root: weights_root(&artifact.weights),
         model_commitment: pi.model_commitment,
         quantization_commitment: pi.quantization_commitment,
@@ -470,9 +498,11 @@ fn build_predictor_report(pos: &[&str]) -> PredictorReport {
         infer,
         verify,
         z_out_head: head(&out),
+        float_error,
+        float_tolerance,
         z_in_head: head(z_in),
         a_in_head: head(a_in),
-        verify_err: res.err().map(|e| format!("{e:?}")),
+        verify_err,
         forged_op,
         reject,
         dims,
@@ -498,6 +528,7 @@ fn print_predictor_report_json(r: &PredictorReport) {
             "op_histogram": r.hist.iter().map(|(k, n)| json!({"op": k, "count": n})).collect::<Vec<_>>(),
             "relation": RELATION_PREDICTOR,
             "weights_root": hex8(&r.weights_root),
+            "weights_root_source": if r.weights_bound_to_export { "export-bundle" } else { "prover" },
             "model_commitment": hex8(&r.model_commitment),
             "quantization_commitment": hex8(&r.quantization_commitment),
             "input_commitment": hex8(&r.input_commitment),
@@ -507,6 +538,8 @@ fn print_predictor_report_json(r: &PredictorReport) {
             "verify_ms": r.verify.as_secs_f64() * 1000.0,
             "proof_bytes": r.proof_bytes,
             "z_out_head": r.z_out_head,
+            "float_error": r.float_error,
+            "float_tolerance": r.float_tolerance,
             "accepted": r.verify_err.is_none(),
             "tamper": {"forged_op": r.forged_op, "rejected_with": r.reject},
         })
@@ -583,12 +616,29 @@ fn print_predictor_report_human(r: &PredictorReport) {
         ))
     );
     println!(
-        "{} commit   weights_root {}   model {}   quant {}",
+        "{} commit   weights_root {} {}  model {}   quant {}",
         li(false),
         dim(&hex8(&r.weights_root)),
+        dim(if r.weights_bound_to_export {
+            "(export-bound)"
+        } else {
+            "(prover-computed)"
+        }),
         dim(&hex8(&r.model_commitment)),
         dim(&hex8(&r.quantization_commitment))
     );
+    if r.weights_bound_to_export {
+        println!(
+            "{}          {}",
+            cont(),
+            dim("the bundle's export-computed root is bound into the model commitment; verify")
+        );
+        println!(
+            "{}          {}",
+            cont(),
+            dim("rejects unless the proven weights reproduce it bit-for-bit")
+        );
+    }
     println!(
         "{} inputs   z_history [{}x{}], action [{}x{}]  {}",
         li(false),
@@ -710,6 +760,15 @@ fn print_predictor_report_human(r: &PredictorReport) {
         cont(),
         dim("exact recompute of attention, softmax, GELU, LayerNorm, residuals")
     );
+    if let (Some(err), Some(tol)) = (r.float_error, r.float_tolerance) {
+        println!(
+            "{} faith    max |int - float| {:.6} <= {:.6}  {}",
+            li(false),
+            err,
+            tol,
+            dim("(offline reference from the export bundle)")
+        );
+    }
     let speedup = if r.verify.as_secs_f64() > 0.0 {
         r.infer.as_secs_f64() / r.verify.as_secs_f64()
     } else {

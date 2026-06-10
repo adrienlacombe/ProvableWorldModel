@@ -31,9 +31,11 @@ non-reproducible attention. There is no proving circuit and no arithmetization.
   implemented and tested. P3 (full CEM planner) and P4 (pixel-to-plan, the ViT
   encoder inside the proof) are deferred. The image encoder is the trusted offline
   step today.
-- The proof attests the exact integer (quantized) relation, not float or PyTorch
-  equivalence. Per-tensor activation-scale calibration for float-faithful outputs
-  is a further refinement; activations stay int8 throughout the current scheme.
+- The proof attests the exact integer (quantized) relation, not the full PyTorch
+  program. Predictor bundles carry calibrated SiLU, GELU, inverse-sqrt, and
+  softmax-exp tables plus an offline float reference output and measured
+  tolerance; the CLI checks the verified integer `z_next` against that bound.
+  Activations stay int8 throughout the proved relation.
 - The argmin uniqueness check and the Freivalds probability bound are formally
   verified in Lean 4 (no `sorry`), under `lean/`.
 
@@ -71,7 +73,7 @@ cargo run -p pwm-testkit --bin pwm --release -- prove-predictor <bundle> # real 
 cargo test --workspace                                                   # accept + reject suites
 ```
 
-The `pwm` CLI prints a four-stage pipeline (EXPORT, PROVE, VERIFY, TAMPER); it
+The `pwm` CLI prints a five-stage pipeline (LOAD, INFER, COMMIT, VERIFY, TAMPER); it
 honors `NO_COLOR` and `--json`.
 
 ## Conventions

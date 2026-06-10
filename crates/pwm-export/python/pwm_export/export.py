@@ -13,11 +13,9 @@ source (a loaded checkpoint) for the synthetic one.
 """
 from __future__ import annotations
 
-import numpy as np
+from typing import Any
 
 from . import canonical as c
-from .fold import fold_linear_bn
-from .quantize import mac_fits_int32, quantize_array
 
 
 def tensor_dict(tensor_id: int, scale_id: int, q_list: list[int], shape: list[int]) -> dict:
@@ -30,14 +28,49 @@ def tensor_dict(tensor_id: int, scale_id: int, q_list: list[int], shape: list[in
     }
 
 
+def predictor_weight_dicts(
+    blocks: list[dict], d: int, heads: int, dim_head: int, mlp: int
+) -> list[dict]:
+    """The predictor-bundle weight tensors in the Rust prover's canonical scheme.
+
+    Mirrors `lewm_predictor.rs` exactly: per block `i` the tensor ids are
+    `1000 + 5*i ..` in registration order `adaln, qkv, out, fc1, fc2`.
+    Weight tensor `k` uses `scale_id = 10 + k`, matching the Rust builder and
+    binding the per-tensor `log2` interpretation into the quantization
+    commitment. `weights_root` over this list is the commitment the bundle
+    carries and the prover must reproduce bit-for-bit (pinned cross-language in
+    the canonical-parity tests).
+    """
+    inner = heads * dim_head
+    out = []
+    for i, bk in enumerate(blocks):
+        base = 1000 + 5 * i
+        for off, (key, shape) in enumerate((
+            ("adaln", [6 * d, d]),
+            ("qkv", [3 * inner, d]),
+            ("out", [d, inner]),
+            ("fc1", [mlp, d]),
+            ("fc2", [d, mlp]),
+        )):
+            k = 5 * i + off
+            out.append(tensor_dict(base + off, 10 + k, bk[key], shape))
+    return out
+
+
 def quantize_torch(w, qmax: int = 127) -> tuple[list[int], int]:
     """Torch entry point for E-202: convert a tensor to an array and quantize."""
+    import numpy as np
+
+    from .quantize import quantize_array
+
     return quantize_array(np.asarray(w.detach().cpu().numpy()), qmax)
 
 
 def fold_torch(weight, bias, bn):
     """Torch entry point for E-203: pull frozen BN stats and fold (NumPy core)."""
     import torch
+
+    from .fold import fold_linear_bn
 
     affine = getattr(bn, "affine", False)
     gamma = bn.weight if affine else torch.ones_like(bn.running_mean)
@@ -58,6 +91,10 @@ def quantize_linear(tensor_id: int, scale_id: int, weight) -> tuple[dict, dict]:
 
     Asserts the int8 MAC for this layer fits the int32 accumulator (spec §3).
     """
+    import numpy as np
+
+    from .quantize import mac_fits_int32, quantize_array
+
     weight = np.asarray(weight, dtype=np.float64)
     out, inner = weight.shape
     if not mac_fits_int32(inner):
@@ -78,12 +115,14 @@ def build_manifest(ops: list[dict], weights: list[dict], tables: list[dict], sca
     }
 
 
-def export_graph(named_weights: list[tuple[int, str, np.ndarray]], tables: list[dict]) -> dict:
+def export_graph(named_weights: list[tuple[int, str, Any]], tables: list[dict]) -> dict:
     """Quantize a list of `(op_id, name, weight)` Linears into a committed manifest.
 
     Returns `{"manifest", "weights", "ops", "scales"}` — the manifest carries the
     same commitments the Rust prover/verifier reproduce (E-205/E-207).
     """
+    import numpy as np
+
     ops: list[dict] = []
     weights: list[dict] = []
     scales: list[dict] = []

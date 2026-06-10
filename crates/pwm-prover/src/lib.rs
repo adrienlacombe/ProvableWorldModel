@@ -670,6 +670,26 @@ pub fn prove_predictor(
     inputs: &[(u32, Vec<i64>)],
     out_binding: OutputBinding,
 ) -> Result<PredictorArtifact, ProveError> {
+    let root = weights_root(weights);
+    prove_predictor_with_weights_root(skeleton, weights, tables, scales, inputs, out_binding, root)
+}
+
+/// [`prove_predictor`] with an externally supplied weights root (for example, the
+/// predictor-scoped root the export pipeline committed over the same tensors).
+/// The given root is bound into the public input's model commitment *as carried* —
+/// it is not recomputed from `weights` — so `pwm_verifier::verify_predictor`
+/// accepts only if the artifact's weights reproduce that root bit-for-bit
+/// (otherwise `CommitmentMismatch(CommitmentKind::Model)`). This makes an
+/// export-carried weight commitment load-bearing instead of display-only.
+pub fn prove_predictor_with_weights_root(
+    skeleton: &Block,
+    weights: &[Tensor],
+    tables: &[ActivationTable],
+    scales: &[Scale],
+    inputs: &[(u32, Vec<i64>)],
+    out_binding: OutputBinding,
+    bound_weights_root: [u8; 32],
+) -> Result<PredictorArtifact, ProveError> {
     // 1. Run the exact integer reference over the block, filling each op's output.
     let proven = prove_block(skeleton, weights, tables, inputs).map_err(ProveError::Block)?;
 
@@ -685,11 +705,8 @@ pub fn prove_predictor(
         )))?;
 
     // 3. Commitments (all via pwm-core, so the verifier recomputes identically).
-    let model_commitment = ModelBinding::v0(
-        block_architecture_commitment(&proven),
-        weights_root(weights),
-    )
-    .commitment();
+    let model_commitment =
+        ModelBinding::v0(block_architecture_commitment(&proven), bound_weights_root).commitment();
     let quantization_commitment =
         QuantBinding::v0(scales.to_vec(), activation_tables_commitment(tables)).commitment();
     let planner_config_commitment = PlannerBinding::p0_sentinel().commitment();

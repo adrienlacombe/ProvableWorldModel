@@ -20,5 +20,6 @@
 //! backlog (M2).
 
 pub mod manifest;
+pub mod predictor_quant;
 pub mod reference;
 pub mod tables_gen;
