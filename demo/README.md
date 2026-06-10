@@ -73,7 +73,7 @@ predictor on the real weights and the real inputs. Heavy: it pulls a PyTorch ima
 and downloads a ~70 MB checkpoint the first time.
 
 The same export plus proof path runs in the `Real E2E` GitHub Actions workflow on
-demand, weekly on `main`, and on PRs that touch the real export/prove surface.
+every push, every PR update, on demand, and weekly on `main`.
 That hosted job validates the JSON proof result is accepted, export-bound, and
 within the bundle's measured float-faithfulness tolerance.
 

@@ -95,8 +95,8 @@ workflow. It builds the exporter and prover images, downloads the
 `quentinll/lewm-pusht` checkpoint plus a `lerobot/pusht` episode, exports the
 bundle, runs `pwm --json prove-predictor /shared/lewm_predictor.json`, checks that
 the proof is accepted and export-bound, and uploads the logs and bundles. It is a
-separate on-demand and weekly workflow because it depends on external assets and
-a large PyTorch image.
+separate workflow that runs on every push, every PR update, on demand, and
+weekly because it depends on external assets and a large PyTorch image.
 
 Without Docker:
 

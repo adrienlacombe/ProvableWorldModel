@@ -2,26 +2,16 @@
 #
 # Hosted real-checkpoint smoke for the public demo path. This is separate from
 # the merge-gate CI because it downloads external Hugging Face assets and builds
-# a PyTorch image. It runs on demand, weekly on main, and on PRs that touch the
-# real export/prove surface.
+# a PyTorch image. It runs on every push, every PR update, on demand, and weekly
+# on main.
 name: Real E2E
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "23 4 * * 1"
+  push:
   pull_request:
-    paths:
-      - ".github/workflows/real-e2e.yml"
-      - "docker-compose.yml"
-      - "Dockerfile"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "crates/pwm-core/**"
-      - "crates/pwm-export/**"
-      - "crates/pwm-prover/**"
-      - "crates/pwm-testkit/**"
-      - "crates/pwm-verifier/**"
 
 permissions:
   contents: read
