@@ -875,7 +875,13 @@ mod tests {
     use super::*;
     use pwm_core::audit::output_tensor;
     use pwm_core::commit::weights_root;
+    use pwm_core::serialize::canonical_bytes;
+    use pwm_core::transcript::blake2s256;
     use pwm_verifier::CommitmentKind;
+
+    const REAL_COMPACT_FIXTURE: &str = include_str!("../fixtures/lewm_predictor_real_compact.json");
+    const REAL_COMPACT_OUTPUT_DIGEST: &str =
+        "6b26564e0dd461ac784993cab5aaf4ab72ebb0ce6fe81dd9b16f6768e1f4a653";
 
     fn small() -> Dims {
         Dims {
@@ -886,6 +892,40 @@ mod tests {
             mlp: 16,
             depth: 1,
         }
+    }
+
+    fn hex(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn real_compact_circuit() -> PredictorCircuit {
+        let loaded =
+            load_real_predictor(REAL_COMPACT_FIXTURE).expect("load compact real predictor fixture");
+        assert_eq!(loaded.dims.d, 8);
+        assert_eq!(loaded.dims.s, 3);
+        assert_eq!(loaded.dims.h, 2);
+        assert_eq!(loaded.dims.dh, 4);
+        assert_eq!(loaded.dims.mlp, 16);
+        assert_eq!(loaded.dims.depth, 2);
+        assert!(loaded.input_source.contains("lerobot/pusht"));
+        assert!(loaded.weights_root.is_some());
+
+        let weights_root = loaded.weights_root;
+        let z_float = loaded.quant.z_out_float.clone();
+        let tolerance = loaded.quant.tolerance;
+        let mut circuit = build_predictor_real(
+            loaded.dims,
+            loaded.blocks,
+            loaded.x,
+            loaded.c,
+            loaded.quant.scheme,
+            loaded.quant.tables,
+        )
+        .expect("build compact real predictor");
+        circuit.export_weights_root = weights_root;
+        circuit.z_float = Some(z_float);
+        circuit.tolerance = Some(tolerance);
+        circuit
     }
 
     fn run(d: Dims) {
@@ -949,6 +989,40 @@ mod tests {
             verify(&artifact),
             Err(VerifyError::FreivaldsCheckFailed { op_id }) if op_id == op
         ));
+    }
+
+    #[test]
+    fn real_checkpoint_compact_fixture_proves_verifies_and_matches_digest() {
+        let c = real_compact_circuit();
+        let f_out = c.scheme.f_ln;
+        let z_float = c.z_float.clone().expect("fixture float reference");
+        let tolerance = c.tolerance.expect("fixture tolerance");
+        let artifact = prove(&c).expect("prove compact real predictor");
+        let out = verify(&artifact).expect("verify compact real predictor");
+
+        let digest = hex(&blake2s256(&canonical_bytes(&artifact.claimed_output)));
+        assert_eq!(
+            digest, REAL_COMPACT_OUTPUT_DIGEST,
+            "compact real predictor output digest changed"
+        );
+        let err = max_float_error(&out, f_out, &z_float);
+        assert!(
+            err <= tolerance,
+            "compact real predictor float error {err} exceeds {tolerance}"
+        );
+    }
+
+    #[test]
+    fn real_checkpoint_compact_fixture_tamper_is_rejected() {
+        let c = real_compact_circuit();
+        let mut artifact = prove(&c).expect("prove compact real predictor");
+        let forged_op = tamper(&mut artifact).expect("a linear op to tamper");
+        match verify(&artifact) {
+            Err(VerifyError::FreivaldsCheckFailed { op_id })
+            | Err(VerifyError::AccumulatorRange { op_id })
+                if op_id == forged_op => {}
+            other => panic!("real predictor tamper was not rejected as expected: {other:?}"),
+        }
     }
 
     #[test]
