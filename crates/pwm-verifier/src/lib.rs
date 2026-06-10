@@ -27,14 +27,14 @@ use pwm_core::tensor::Tensor;
 use pwm_core::audit::{
     audit_transcript, next_freivalds_r, output_tensor, predictor_transcript, relation_id,
     AuditArtifact, PlanningProof, PredictorArtifact, RolloutProof, ARTIFACT_VERSION, RELATION_MLP,
-    RELATION_PREDICTOR, RELATION_VERSION, SERIALIZATION_VERSION,
+    RELATION_PREDICTOR,
 };
 use pwm_core::commit::{
     claimed_output_commitment, predictor_inputs_commitment, weights_root, ModelBinding,
     PlannerBinding, QuantBinding,
 };
 use pwm_core::field::Fp61;
-use pwm_core::fixed_point::{requantize, valid_shift, OverflowPolicy, Rounding};
+use pwm_core::fixed_point::{requantize, valid_shift, Rounding};
 use pwm_core::freivalds::{
     check_linear_biased, dims_within_soundness_margin, precompute_v, within_operand_bound,
 };
@@ -45,6 +45,44 @@ use pwm_core::relation::StatementType;
 use pwm_core::tables::activation_tables_commitment;
 use pwm_core::trace::OpRecord;
 use pwm_core::transcript::Transcript;
+
+/// Which committed value failed to match the public input — the sub-discriminant
+/// for [`VerifyError::CommitmentMismatch`]. A typed enum (not a string) so the
+/// rejection code is compiler-checked and stable for downstream matchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitmentKind {
+    /// The model commitment (block architecture + weight root).
+    Model,
+    /// The quantization commitment (scales + activation tables).
+    Quantization,
+    /// The planner-config commitment.
+    Planner,
+    /// The predictor input commitment (the seeded latent-history / action buffers).
+    Inputs,
+}
+
+/// Which weight/table binding was absent or mis-shaped — the sub-discriminant for
+/// [`VerifyError::MissingBinding`]. A typed enum (not a string) so the rejection
+/// code is compiler-checked and stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingKind {
+    /// A feed-forward linear op's weight tensor was absent.
+    Weight,
+    /// A feed-forward linear op's weight tensor was not a 2-D matrix.
+    WeightShape,
+    /// A block op's weight tensor was absent.
+    BlockWeight,
+    /// A block op's activation/softmax table was absent.
+    BlockTable,
+    /// A block op's weight tensor was not a 2-D matrix.
+    BlockWeightShape,
+    /// A feed-forward linear op's bias tensor was absent.
+    Bias,
+    /// A LayerNorm op's table was absent.
+    LayerNormTable,
+    /// An activation op's table was absent.
+    Table,
+}
 
 /// Why a proof was rejected. Every rejection has a stable, specific code
 /// (specs.md §12); unsupported semantics fail closed.
@@ -57,14 +95,14 @@ pub enum VerifyError {
     /// The statement type is wrong for the relation.
     RelationMismatch,
     /// A recomputed commitment did not match the public input.
-    CommitmentMismatch(&'static str),
+    CommitmentMismatch(CommitmentKind),
     /// The trace does not conform to the committed op graph.
     GraphMismatch {
         /// Index in the op list where the mismatch was found.
         index: usize,
     },
-    /// A referenced weight or table was missing from the artifact.
-    MissingBinding(&'static str),
+    /// A referenced weight or table was missing from the artifact (or mis-shaped).
+    MissingBinding(BindingKind),
     /// The first trace input did not match the public input.
     PublicInputMismatch,
     /// A record's input did not equal the previous record's output.
@@ -193,10 +231,10 @@ fn weight_i8(
 ) -> Result<(Vec<i8>, usize, usize), VerifyError> {
     let w = artifact
         .weight(weight_id)
-        .ok_or(VerifyError::MissingBinding("weight"))?;
+        .ok_or(VerifyError::MissingBinding(BindingKind::Weight))?;
     let shape = w.shape();
     if shape.len() != 2 {
-        return Err(VerifyError::MissingBinding("weight_shape"));
+        return Err(VerifyError::MissingBinding(BindingKind::WeightShape));
     }
     let i8s = w.data().iter().map(|c| c.value() as i8).collect();
     Ok((i8s, shape[0] as usize, shape[1] as usize))
@@ -262,6 +300,12 @@ impl Challenges<'_> {
 
 /// Verify a commit-and-audit proof (non-interactive Fiat-Shamir). Returns `Ok(())`
 /// iff every check passes.
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if any bound commitment, the graph conformance, a
+/// Freivalds range guard or check, an exact recompute, the wiring, or the claimed
+/// output fails; an unsupported relation or version fails closed.
 pub fn verify(artifact: &AuditArtifact) -> Result<(), VerifyError> {
     let troot = artifact.trace_root();
     let mut ch = Challenges::Fiat(audit_transcript(&artifact.public_input, &troot));
@@ -344,39 +388,25 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
     }
 
     // 2. Recompute and check the bound commitments.
-    let architecture_commitment = artifact.graph.commitment();
-    let w_root = weights_root(&artifact.weights);
-    let model_commitment = ModelBinding {
-        architecture_commitment,
-        weights_root: w_root,
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
-    .commitment();
+    let model_commitment =
+        ModelBinding::v0(artifact.graph.commitment(), weights_root(&artifact.weights)).commitment();
     if model_commitment != pi.model_commitment {
-        return Err(VerifyError::CommitmentMismatch("model"));
+        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Model));
     }
 
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: artifact.scales.clone(),
-        activation_tables_commitment: activation_tables_commitment(&artifact.tables),
-    }
+    let quantization_commitment = QuantBinding::v0(
+        artifact.scales.clone(),
+        activation_tables_commitment(&artifact.tables),
+    )
     .commitment();
     if quantization_commitment != pi.quantization_commitment {
-        return Err(VerifyError::CommitmentMismatch("quantization"));
+        return Err(VerifyError::CommitmentMismatch(
+            CommitmentKind::Quantization,
+        ));
     }
 
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
-    if planner_config_commitment != pi.planner_config_commitment {
-        return Err(VerifyError::CommitmentMismatch("planner"));
+    if PlannerBinding::p0_sentinel().commitment() != pi.planner_config_commitment {
+        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Planner));
     }
 
     // 3. The trace must conform to the committed op graph (same kinds/ids/dims).
@@ -438,6 +468,12 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
 /// verifies, every cost is the exact goal-MSE of that candidate's verified output,
 /// and the selected candidate is the minimum under smallest-index tie-breaking
 /// (specs.md §10). All candidates are scored — proving only the winner is unsound.
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if there are no candidates, a candidate's P0 proof
+/// fails, a recomputed cost mismatches, or the argmin selection is not the sound
+/// minimum under smallest-index tie-breaking.
 pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
     if proof.candidates.is_empty() {
         return Err(VerifyError::NoCandidates);
@@ -456,7 +492,7 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         if output.len() != proof.goal.len() {
             return Err(VerifyError::CostMismatch { index });
@@ -482,6 +518,11 @@ pub fn verify_planning(proof: &PlanningProof) -> Result<(), VerifyError> {
 /// bound to *all* candidate trace roots (so they depend on every committed
 /// accumulator). Verdict-equivalent to [`verify_planning`]; only cheaper. Falls
 /// back to per-candidate verification if the candidates do not share a model.
+///
+/// # Errors
+///
+/// Same conditions as [`verify_planning`] (it is verdict-equivalent): no
+/// candidates, a failing candidate proof, a cost mismatch, or an unsound argmin.
 pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError> {
     if proof.candidates.is_empty() {
         return Err(VerifyError::NoCandidates);
@@ -542,7 +583,7 @@ pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError>
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         if output.len() != proof.goal.len()
             || mse_cost(&output, &proof.goal) != Some(proof.costs[index])
@@ -564,6 +605,12 @@ pub fn verify_planning_batched(proof: &PlanningProof) -> Result<(), VerifyError>
 /// trailing `history_size`-window of latents (initial history + previously
 /// predicted latents), and each step's output is the recorded trajectory latent
 /// (specs.md §9).
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if the history window is malformed, a step's P0 proof
+/// fails ([`VerifyError::RolloutStep`]), or the recurrence wiring breaks (a step's
+/// input is not the trailing latent window, or its output is not the recorded one).
 pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
     let h = proof.history_size as usize;
     if h == 0 || proof.initial_latents.len() < h || proof.steps.len() != proof.trajectory.len() {
@@ -591,7 +638,7 @@ pub fn verify_rollout(proof: &RolloutProof) -> Result<(), VerifyError> {
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         if next != proof.trajectory[step] {
             return Err(VerifyError::RolloutWiring { step });
@@ -645,13 +692,13 @@ fn audit_block(
         weights
             .iter()
             .find(|t| t.tensor_id() == id)
-            .ok_or(VerifyError::MissingBinding("block_weight"))
+            .ok_or(VerifyError::MissingBinding(BindingKind::BlockWeight))
     };
     let find_table = |id: u32| -> Result<&pwm_core::tables::ActivationTable, VerifyError> {
         tables
             .iter()
             .find(|t| t.table_id == id)
-            .ok_or(VerifyError::MissingBinding("block_table"))
+            .ok_or(VerifyError::MissingBinding(BindingKind::BlockTable))
     };
 
     for op in &block.ops {
@@ -668,7 +715,7 @@ fn audit_block(
                 let w = find_weight(*weight_id)?;
                 let shape = w.shape();
                 if shape.len() != 2 {
-                    return Err(VerifyError::MissingBinding("block_weight_shape"));
+                    return Err(VerifyError::MissingBinding(BindingKind::BlockWeightShape));
                 }
                 let rows = shape[0] as usize;
                 let cols = shape[1] as usize;
@@ -680,7 +727,7 @@ fn audit_block(
                     Some(bid) => find_weight(*bid)?
                         .data()
                         .iter()
-                        .map(|c| c.value())
+                        .map(pwm_core::BoundedInt::value)
                         .collect(),
                     None => alloc::vec![0i64; rows],
                 };
@@ -944,7 +991,7 @@ fn audit_block(
                 let w = find_weight(*weight_id)?;
                 let shape = w.shape();
                 if shape.len() != 2 {
-                    return Err(VerifyError::MissingBinding("block_weight_shape"));
+                    return Err(VerifyError::MissingBinding(BindingKind::BlockWeightShape));
                 }
                 let rows = shape[0] as usize;
                 let cols = shape[1] as usize;
@@ -957,7 +1004,7 @@ fn audit_block(
                     Some(bid) => find_weight(*bid)?
                         .data()
                         .iter()
-                        .map(|c| c.value())
+                        .map(pwm_core::BoundedInt::value)
                         .collect(),
                     None => alloc::vec![0i64; rows],
                 };
@@ -991,6 +1038,13 @@ fn audit_block(
 /// inputs. The Fiat-Shamir transcript is the commitment-bound [`predictor_transcript`]
 /// (public input + block witness), built internally, so the challenge is
 /// statement-bound and non-adaptive.
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] if the relation/version is unsupported, any recomputed
+/// commitment (model, quantization, planner, inputs) mismatches the public input,
+/// a block op fails its Freivalds or exact-recompute audit, or the claimed output
+/// or its commitment does not match.
 pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError> {
     let pi = &artifact.public_input;
 
@@ -1008,38 +1062,29 @@ pub fn verify_predictor(artifact: &PredictorArtifact) -> Result<(), VerifyError>
     }
 
     // 2. Recompute and check the bound commitments.
-    let model_commitment = ModelBinding {
-        architecture_commitment: block_architecture_commitment(&artifact.block),
-        weights_root: weights_root(&artifact.weights),
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
+    let model_commitment = ModelBinding::v0(
+        block_architecture_commitment(&artifact.block),
+        weights_root(&artifact.weights),
+    )
     .commitment();
     if model_commitment != pi.model_commitment {
-        return Err(VerifyError::CommitmentMismatch("model"));
+        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Model));
     }
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: artifact.scales.clone(),
-        activation_tables_commitment: activation_tables_commitment(&artifact.tables),
-    }
+    let quantization_commitment = QuantBinding::v0(
+        artifact.scales.clone(),
+        activation_tables_commitment(&artifact.tables),
+    )
     .commitment();
     if quantization_commitment != pi.quantization_commitment {
-        return Err(VerifyError::CommitmentMismatch("quantization"));
+        return Err(VerifyError::CommitmentMismatch(
+            CommitmentKind::Quantization,
+        ));
     }
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
-    if planner_config_commitment != pi.planner_config_commitment {
-        return Err(VerifyError::CommitmentMismatch("planner"));
+    if PlannerBinding::p0_sentinel().commitment() != pi.planner_config_commitment {
+        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Planner));
     }
     if pi.latent_history_commitment != Some(predictor_inputs_commitment(&artifact.inputs)) {
-        return Err(VerifyError::CommitmentMismatch("inputs"));
+        return Err(VerifyError::CommitmentMismatch(CommitmentKind::Inputs));
     }
 
     // 3. Audit the block under the commitment-bound transcript (binds the public
@@ -1176,8 +1221,8 @@ fn check_linear(
         Some(id) => {
             let b = artifact
                 .weight(id)
-                .ok_or(VerifyError::MissingBinding("bias"))?;
-            b.data().iter().map(|c| c.value()).collect()
+                .ok_or(VerifyError::MissingBinding(BindingKind::Bias))?;
+            b.data().iter().map(pwm_core::BoundedInt::value).collect()
         }
         None => alloc::vec![0i64; rows],
     };
@@ -1240,7 +1285,7 @@ fn check_layernorm(
 ) -> Result<(), VerifyError> {
     let table = artifact
         .table(r.table_id)
-        .ok_or(VerifyError::MissingBinding("layernorm_table"))?;
+        .ok_or(VerifyError::MissingBinding(BindingKind::LayerNormTable))?;
     let mode = Rounding::from_discriminant(r.rounding)
         .ok_or(VerifyError::ExactReplayMismatch { op_id: r.op_id })?;
     if !valid_shift(r.shift) {
@@ -1264,7 +1309,7 @@ fn check_activation(
 ) -> Result<(), VerifyError> {
     let table = artifact
         .table(r.table_id)
-        .ok_or(VerifyError::MissingBinding("table"))?;
+        .ok_or(VerifyError::MissingBinding(BindingKind::Table))?;
     if r.input.len() != r.output.len() {
         return Err(VerifyError::ExactReplayMismatch { op_id: r.op_id });
     }

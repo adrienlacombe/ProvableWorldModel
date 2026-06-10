@@ -6,7 +6,7 @@
 //! label is a [`LoggableValue`], and there is deliberately **no** conversion from
 //! a `BoundedInt`, `Tensor`, `M31`, `TensorCell.value`, or raw byte blob into a
 //! `LoggableValue`. A developer who tries to log a witness value gets a compile
-//! error, not a runtime leak (`docs/spec/05-observability.md#redaction`).
+//! error, not a runtime leak (`docs/legacy-stark/spec/05-observability.md (archived)`).
 
 use alloc::string::String;
 
@@ -47,7 +47,7 @@ impl LoggableValue {
 
 /// The sanctioned redaction helper: turn a 32-byte commitment into a loggable
 /// hex value. This is the *only* way a private object enters a record — by its
-/// commitment, never its contents (`docs/spec/05-observability.md#enforcement-not-etiquette`,
+/// commitment, never its contents (`docs/legacy-stark/spec/05-observability.md (archived)`,
 /// the `commit_for_log` rule). The caller computes the commitment with the
 /// committed scheme (RFC-0014, #35); this function only encodes the already-bound
 /// 32-byte digest.
@@ -83,7 +83,7 @@ fn nibble(n: u8) -> char {
 /// A witness struct implements `LogShape` to yield shape/count/scale metadata —
 /// and *only* that. The trait has no method that can return a value, so the
 /// redaction boundary holds even for types that opt into logging their structure
-/// (`docs/spec/05-observability.md#enforcement-not-etiquette`).
+/// (`docs/legacy-stark/spec/05-observability.md (archived)`).
 pub trait LogShape {
     /// The tensor/op shapes touched, as `(tensor_id, dims, scale_id)` triples.
     /// Dimensions and ids are structural metadata; no cell value is exposed.

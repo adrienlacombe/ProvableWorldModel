@@ -3,7 +3,7 @@
 """Changelog and semver gate for the release path.
 
 Enforces the changelog discipline from
-``docs/spec/09-release-and-versioning.md#changelog`` (INV-REL-10): no release
+``docs/legacy-stark/spec/09-release-and-versioning.md#changelog`` (INV-REL-10): no release
 tag is cut without a matching, non-empty ``CHANGELOG.md`` section whose version
 equals the tag, and the version must be semver-conformant.
 

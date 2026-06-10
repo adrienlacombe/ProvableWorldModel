@@ -8,6 +8,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["proof-system", "world-model", "commit-and-audit", "no-std", "cryptography"]
+categories = ["cryptography", "no-std", "mathematics"]
+
+[features]
+# `obs` gates the observability *schema* (the LogRecord / MetricSample types and
+# the value-free JSON emitter, #67): data-only types with no live producer yet.
+# It is **off by default**, so nothing that links pwm-core normally — above all the
+# no_std verifier trust root — carries it. CI exercises `tests/obs.rs` via
+# `cargo test --all-features`.
+obs = []
 
 [dependencies]
 # Blake2s for the public-input digest, commitments, and Fiat-Shamir transcript

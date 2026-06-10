@@ -12,7 +12,7 @@ use pwm_export::reference::{LayerSpec, Model};
 use pwm_prover::{prove_feedforward, prove_planning, OutputBinding};
 use pwm_verifier::{
     verify, verify_interactive, verify_planning, verify_planning_batched, verify_sampled,
-    VerifyError,
+    CommitmentKind, VerifyError,
 };
 
 fn weight(id: u32, rows: u32, cols: u32, vals: &[i8]) -> Tensor {
@@ -111,7 +111,12 @@ fn golden_vector_regression() {
     use pwm_core::serialize::canonical_bytes;
     use pwm_core::transcript::blake2s256;
     let a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
-    let out: Vec<i64> = a.claimed_output.data().iter().map(|c| c.value()).collect();
+    let out: Vec<i64> = a
+        .claimed_output
+        .data()
+        .iter()
+        .map(pwm_core::BoundedInt::value)
+        .collect();
     assert_eq!(out, vec![4, -1], "golden output");
     let digest = blake2s256(&canonical_bytes(&a));
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
@@ -201,7 +206,7 @@ fn accept_valid_proof() {
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect::<Vec<_>>(),
         vec![4, -1]
     );
@@ -216,7 +221,10 @@ fn reject_tampered_weight() {
     let mut data: Vec<BoundedInt> = w.data().to_vec();
     data[0] = BoundedInt::new(7, -128, 127).unwrap();
     *w = Tensor::new(w.tensor_id(), w.shape().to_vec(), w.scale_id(), data).unwrap();
-    assert_eq!(verify(&a), Err(VerifyError::CommitmentMismatch("model")));
+    assert_eq!(
+        verify(&a),
+        Err(VerifyError::CommitmentMismatch(CommitmentKind::Model))
+    );
 }
 
 #[test]
@@ -331,6 +339,44 @@ fn reject_batched_planning_tampered_candidate() {
     assert!(matches!(
         verify_planning_batched(&proof),
         Err(VerifyError::Candidate { index: 1, .. })
+    ));
+}
+
+// The argmin and cost checks live outside the per-candidate Freivalds loop, so the
+// amortized `verify_planning_batched` path must enforce them independently of
+// `verify_planning`. These mirror the per-candidate reject tests on the fast path.
+
+#[test]
+fn reject_batched_planning_tie_break_violation() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Candidate 2 ties candidate 0 at cost 0, but candidate 0 is the earliest minimum.
+    proof.selected_index = 2;
+    proof.selected_cost = proof.costs[2];
+    assert_eq!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::ArgminViolation)
+    );
+}
+
+#[test]
+fn reject_batched_planning_not_minimum() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    proof.selected_index = 1; // cost 17 is not the minimum
+    proof.selected_cost = proof.costs[1];
+    assert_eq!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::ArgminViolation)
+    );
+}
+
+#[test]
+fn reject_batched_planning_forged_cost() {
+    let mut proof = prove_planning(&model(), &candidates(), &goal(), out_binding()).unwrap();
+    // Claim candidate 1 is cheap without changing its (Freivalds-verified) output.
+    proof.costs[1] = -5;
+    assert!(matches!(
+        verify_planning_batched(&proof),
+        Err(VerifyError::CostMismatch { index: 1 })
     ));
 }
 

@@ -8,8 +8,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["proof-system", "verifier", "commit-and-audit", "no-std"]
+categories = ["cryptography", "no-std"]
 
 [dependencies]
+# The verifier is the no_std trust root. pwm-core's observability schema is behind
+# the off-by-default `obs` feature, so the verifier links none of it.
 pwm-core = { workspace = true }
 
 [dev-dependencies]

@@ -20,7 +20,8 @@ use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::Tensor;
 use pwm_prover::prove_block;
 use pwm_verifier::{verify_block, VerifyError};
-use serde_json::Value;
+
+use crate::bundle::{self, BundleError};
 
 const CLO: i64 = -128;
 const CHI: i64 = 127;
@@ -400,7 +401,7 @@ fn attn(b: &mut Builder, x: u32, d: Dims, w: BlockWeights) -> u32 {
     // Reassemble [s, inner] = per position, concat the heads' [dh] slices.
     let mut parts = Vec::with_capacity(d.s * d.h);
     for p in 0..d.s {
-        for oh in head_outs.iter() {
+        for oh in &head_outs {
             parts.push(b.slice(*oh, p * d.dh, d.dh));
         }
     }
@@ -537,7 +538,7 @@ pub fn verify(
 
 /// Forge the first attention/FFN projection output; the Freivalds check rejects it.
 pub fn tamper(proven: &mut Block) -> Option<u32> {
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::BatchedLinear { op_id, out, .. } = op {
             if let Some(first) = out.first_mut() {
                 *first += 1;
@@ -563,44 +564,43 @@ pub struct RealPredictor {
     pub input_source: String,
 }
 
-/// Parse a full predictor export bundle.
-pub fn load_real_predictor(json: &str) -> RealPredictor {
-    let v: Value = serde_json::from_str(json).expect("predictor bundle json");
-    let g = |k: &str| v["dims"][k].as_u64().expect("dim") as usize;
+/// Parse a full predictor export bundle, or a [`BundleError`] describing what was
+/// malformed (so the CLI can report it cleanly instead of panicking).
+pub fn load_real_predictor(json: &str) -> Result<RealPredictor, BundleError> {
+    let v = bundle::parse(json)?;
+    let dv = bundle::field(&v, "dims")?;
     let dims = Dims {
-        d: g("d"),
-        s: g("s"),
-        h: g("h"),
-        dh: g("dh"),
-        mlp: g("mlp"),
-        depth: g("depth"),
+        d: bundle::u64_at(dv, "d")? as usize,
+        s: bundle::u64_at(dv, "s")? as usize,
+        h: bundle::u64_at(dv, "h")? as usize,
+        dh: bundle::u64_at(dv, "dh")? as usize,
+        mlp: bundle::u64_at(dv, "mlp")? as usize,
+        depth: bundle::u64_at(dv, "depth")? as usize,
     };
-    let ints = |val: &Value| -> Vec<i64> {
-        val.as_array()
-            .expect("array")
-            .iter()
-            .map(|x| x.as_i64().expect("int"))
-            .collect()
-    };
-    let blocks = v["blocks"]
+    let blocks = bundle::field(&v, "blocks")?
         .as_array()
-        .expect("blocks")
+        .ok_or(BundleError::WrongType {
+            field: "blocks",
+            expected: "an array",
+        })?
         .iter()
-        .map(|bk| RealBlock {
-            qkv: ints(&bk["qkv"]),
-            out: ints(&bk["out"]),
-            fc1: ints(&bk["fc1"]),
-            fc2: ints(&bk["fc2"]),
-            adaln: ints(&bk["adaln"]),
+        .map(|bk| {
+            Ok(RealBlock {
+                qkv: bundle::ints_at(bk, "qkv")?,
+                out: bundle::ints_at(bk, "out")?,
+                fc1: bundle::ints_at(bk, "fc1")?,
+                fc2: bundle::ints_at(bk, "fc2")?,
+                adaln: bundle::ints_at(bk, "adaln")?,
+            })
         })
-        .collect();
-    RealPredictor {
+        .collect::<Result<Vec<_>, BundleError>>()?;
+    Ok(RealPredictor {
         dims,
         blocks,
-        x: ints(&v["x"]),
-        c: ints(&v["c"]),
-        input_source: v["input_source"].as_str().unwrap_or("").to_string(),
-    }
+        x: bundle::ints_at(&v, "x")?,
+        c: bundle::ints_at(&v, "c")?,
+        input_source: bundle::str_at_or(&v, "input_source", ""),
+    })
 }
 
 #[cfg(test)]
@@ -685,8 +685,10 @@ mod tests {
         });
     }
 
-    // The real le-wm V0 dims (192/3/16/64/2048, depth 6). Heavy (~2k ops, large
-    // matmuls), so it is ignored by default; run with `--ignored`.
+    // The real le-wm V0 dims (192/3/16/64/2048, depth 6, ~2.4k ops). Heavy in a
+    // debug build, so it is `#[ignore]`d for the default `cargo test`; the CI test
+    // job runs it in release via `cargo test --release -- --ignored` (~0.1 s there),
+    // so the headline "the full 192-dim predictor verifies" claim is gated.
     #[test]
     #[ignore]
     fn real_v0_dims_full_predictor_verifies() {

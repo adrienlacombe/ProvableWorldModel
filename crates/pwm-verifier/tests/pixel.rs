@@ -214,7 +214,7 @@ fn reject_tampered_patch_embedding() {
 fn reject_tampered_attention_scores() {
     let mut proven = prove_block(&encoder(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the QKᵀ scores (op_id 6) -> exact matmul recompute rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::MatMul { op_id: 6, out, .. } = op {
             out[0] += 1;
         }
@@ -229,7 +229,7 @@ fn reject_tampered_attention_scores() {
 fn reject_tampered_final_norm() {
     let mut proven = prove_block(&encoder(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the final LayerNorm latent (op_id 16) -> exact recompute rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::LayerNorm { op_id: 16, out, .. } = op {
             out[0] += 7;
         }

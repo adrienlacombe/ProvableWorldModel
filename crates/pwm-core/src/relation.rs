@@ -5,13 +5,13 @@
 //! public input and in observability records. It is a small, stable, dependency-
 //! free enum so the prover, verifier, and observability layer agree on the
 //! statement vocabulary without sharing higher-level code. The full P0–P4 tier
-//! definitions live in `docs/spec/00-overview.md#scope-and-statement-tiers`; the
+//! definitions live in `specs.md §1`; the
 //! relation-id registry and public-input binding are owned by later issues
 //! (#33, #63).
 
 /// The statement a proof attests to. The discriminant in `PublicInput` that
 /// selects which AIR components must be present and verified
-/// (`docs/spec/01-architecture.md#component-model`).
+/// (`specs.md §11`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatementType {
     /// P0: one predictor step (`z_next = PredProj(ARPredictor(...))`).
@@ -28,7 +28,7 @@ pub enum StatementType {
 
 impl StatementType {
     /// The canonical, stable label used in serialized records (matches the
-    /// variant name in `docs/spec/01-architecture.md#component-model`).
+    /// variant name in `specs.md §11`).
     pub const fn as_str(self) -> &'static str {
         match self {
             StatementType::P0Step => "P0Step",

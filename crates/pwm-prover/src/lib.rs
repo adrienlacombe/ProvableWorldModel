@@ -8,14 +8,15 @@
 //! Freivalds challenge exists (non-interactive Fiat-Shamir; the verifier derives
 //! the challenge from the commitment).
 //!
-//! `pwm-prover` depends only on `pwm-core` and `pwm-export` (the Rust reference) —
-//! no proving substrate. The trace builder, rollout, and planning provers extend
-//! this per the backlog (M3–M6).
+//! `pwm-prover` depends only on `pwm-core` and the `pwm-export` Rust reference —
+//! no proving substrate. It provides the P0 feed-forward prover
+//! ([`prove_feedforward`]), the P1 autoregressive rollout ([`prove_rollout`]), the
+//! P2 fixed-candidate planner ([`prove_planning`]), and the commitment-bound
+//! predictor-block provers ([`prove_block`], [`prove_predictor`]).
 
 use pwm_core::audit::{
     output_tensor, relation_id, AuditArtifact, OutputTensorError, PlanningProof, PredictorArtifact,
-    RolloutProof, ARTIFACT_VERSION, RELATION_MLP, RELATION_PREDICTOR, RELATION_VERSION,
-    SERIALIZATION_VERSION,
+    RolloutProof, ARTIFACT_VERSION, RELATION_MLP, RELATION_PREDICTOR,
 };
 use pwm_core::block::{block_architecture_commitment, Block, BlockOp};
 use pwm_core::commit::{
@@ -23,9 +24,11 @@ use pwm_core::commit::{
     PlannerBinding, QuantBinding,
 };
 use pwm_core::field::{try_encode, OutOfRange};
-use pwm_core::fixed_point::{requantize, OverflowPolicy, Rounding};
+use pwm_core::fixed_point::{requantize, Rounding};
 use pwm_core::planning::{argmin, mse_cost};
-use pwm_core::predictor::{gate_vec, layernorm, matmul, modulate_vec, residual_add, softmax_rows};
+use pwm_core::predictor::{
+    gate_vec, layernorm, linear, matmul, modulate_vec, residual_add, softmax_rows,
+};
 use pwm_core::public_input::PublicInput;
 use pwm_core::relation::StatementType;
 use pwm_core::tables::{activation_tables_commitment, ActivationTable};
@@ -66,32 +69,15 @@ pub fn prove_feedforward(
     let run = model.run(input).map_err(ProveError::Reference)?;
 
     // 2. Commitments (all via pwm-core, so the verifier recomputes identically).
-    let architecture_commitment = run.graph.commitment();
     let weights = model.weight_tensors();
-    let w_root = weights_root(&weights);
-    let model_commitment = ModelBinding {
-        architecture_commitment,
-        weights_root: w_root,
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
+    let model_commitment =
+        ModelBinding::v0(run.graph.commitment(), weights_root(&weights)).commitment();
+    let quantization_commitment = QuantBinding::v0(
+        model.scales.clone(),
+        activation_tables_commitment(&model.tables),
+    )
     .commitment();
-
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: model.scales.clone(),
-        activation_tables_commitment: activation_tables_commitment(&model.tables),
-    }
-    .commitment();
-
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
+    let planner_config_commitment = PlannerBinding::p0_sentinel().commitment();
 
     // 3. Claimed output tensor + commitment.
     let claimed_output = output_tensor(out_binding.tensor_id, out_binding.scale_id, &run.output)
@@ -175,7 +161,7 @@ pub fn prove_rollout(
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         latents.push(next.clone());
         trajectory.push(next);
@@ -211,7 +197,7 @@ pub fn prove_planning(
             .claimed_output
             .data()
             .iter()
-            .map(|c| c.value())
+            .map(pwm_core::BoundedInt::value)
             .collect();
         costs.push(mse_cost(&output, goal).ok_or(PlanError::CostOverflow)?);
         candidates.push(artifact);
@@ -232,8 +218,17 @@ pub fn prove_planning(
 pub enum BlockError {
     /// A referenced buffer was not yet written/seeded.
     MissingBuffer(u32),
-    /// A referenced weight/table binding was missing or malformed.
-    MissingBinding,
+    /// No weight/bias tensor was bound for this `weight_id`.
+    MissingWeight(u32),
+    /// No activation/LayerNorm table was bound for this `table_id`.
+    MissingTable(u32),
+    /// An op's serialized rounding-mode byte did not decode to a known [`Rounding`].
+    InvalidRounding {
+        /// The op whose rounding field was malformed.
+        op_id: u32,
+        /// The undecodable discriminant byte.
+        discriminant: u8,
+    },
     /// An activation/LayerNorm value fell outside the committed table domain.
     TableDomain,
     /// A shape mismatch between an op's buffers.
@@ -262,13 +257,13 @@ pub fn prove_block(
         weights
             .iter()
             .find(|t| t.tensor_id() == id)
-            .ok_or(BlockError::MissingBinding)
+            .ok_or(BlockError::MissingWeight(id))
     };
     let table = |id: u32| {
         tables
             .iter()
             .find(|t| t.table_id == id)
-            .ok_or(BlockError::MissingBinding)
+            .ok_or(BlockError::MissingTable(id))
     };
 
     let mut out_ops = Vec::with_capacity(block.ops.len());
@@ -294,15 +289,16 @@ pub fn prove_block(
                 }
                 let wd = w.data();
                 let bias: Vec<i64> = match bias_id {
-                    Some(bid) => weight(bid)?.data().iter().map(|c| c.value()).collect(),
+                    Some(bid) => weight(bid)?
+                        .data()
+                        .iter()
+                        .map(pwm_core::BoundedInt::value)
+                        .collect(),
                     None => vec![0i64; rows],
                 };
-                let out: Vec<i64> = (0..rows)
-                    .map(|r| {
-                        let base = r * cols;
-                        bias[r] + (0..cols).map(|c| wd[base + c].value() * x[c]).sum::<i64>()
-                    })
-                    .collect();
+                // Delegate to the shared kernel so the prover trace is definitionally
+                // identical to the reference model and the verifier's recompute.
+                let out = linear(wd, &x, &bias, rows, cols);
                 bufs.insert(out_buf, out.clone());
                 BlockOp::Linear {
                     op_id,
@@ -326,7 +322,10 @@ pub fn prove_block(
             } => {
                 let x = get(&bufs, in_buf)?;
                 let mode =
-                    Rounding::from_discriminant(rounding).ok_or(BlockError::MissingBinding)?;
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
+                        op_id,
+                        discriminant: rounding,
+                    })?;
                 let out: Vec<i64> = x
                     .iter()
                     .map(|&n| requantize(n, shift, zero_point, clamp_lo, clamp_hi, mode))
@@ -380,7 +379,10 @@ pub fn prove_block(
                 let x = get(&bufs, in_buf)?;
                 let t = table(table_id)?;
                 let mode =
-                    Rounding::from_discriminant(rounding).ok_or(BlockError::MissingBinding)?;
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
+                        op_id,
+                        discriminant: rounding,
+                    })?;
                 let out = layernorm(&x, t, shift, clamp_lo, clamp_hi, mode)
                     .ok_or(BlockError::TableDomain)?;
                 bufs.insert(out_buf, out.clone());
@@ -413,7 +415,10 @@ pub fn prove_block(
                 let scale = get(&bufs, scale_buf)?;
                 let shift = get(&bufs, shift_buf)?;
                 let mode =
-                    Rounding::from_discriminant(rounding).ok_or(BlockError::MissingBinding)?;
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
+                        op_id,
+                        discriminant: rounding,
+                    })?;
                 if scale.len() != x.len() || shift.len() != x.len() {
                     return Err(BlockError::Shape);
                 }
@@ -449,7 +454,10 @@ pub fn prove_block(
                 let g = get(&bufs, gate_buf)?;
                 let x = get(&bufs, x_buf)?;
                 let mode =
-                    Rounding::from_discriminant(rounding).ok_or(BlockError::MissingBinding)?;
+                    Rounding::from_discriminant(rounding).ok_or(BlockError::InvalidRounding {
+                        op_id,
+                        discriminant: rounding,
+                    })?;
                 if g.len() != x.len() {
                     return Err(BlockError::Shape);
                 }
@@ -613,20 +621,18 @@ pub fn prove_block(
                 }
                 let wd = w.data();
                 let bias: Vec<i64> = match bias_id {
-                    Some(bid) => weight(bid)?.data().iter().map(|c| c.value()).collect(),
+                    Some(bid) => weight(bid)?
+                        .data()
+                        .iter()
+                        .map(pwm_core::BoundedInt::value)
+                        .collect(),
                     None => vec![0i64; rows],
                 };
+                // Same shared kernel as `Linear`, applied per sequence row.
                 let mut out = Vec::with_capacity(s * rows);
                 for tt in 0..s {
                     let xrow = &x[tt * cols..(tt + 1) * cols];
-                    for (r, &b) in bias.iter().enumerate() {
-                        let base = r * cols;
-                        out.push(
-                            b + (0..cols)
-                                .map(|c| wd[base + c].value() * xrow[c])
-                                .sum::<i64>(),
-                        );
-                    }
+                    out.extend(linear(wd, xrow, &bias, rows, cols));
                 }
                 bufs.insert(out_buf, out.clone());
                 BlockOp::BatchedLinear {
@@ -679,27 +685,14 @@ pub fn prove_predictor(
         )))?;
 
     // 3. Commitments (all via pwm-core, so the verifier recomputes identically).
-    let model_commitment = ModelBinding {
-        architecture_commitment: block_architecture_commitment(&proven),
-        weights_root: weights_root(weights),
-        relation_version: RELATION_VERSION,
-        serialization_version: SERIALIZATION_VERSION,
-    }
+    let model_commitment = ModelBinding::v0(
+        block_architecture_commitment(&proven),
+        weights_root(weights),
+    )
     .commitment();
-    let quantization_commitment = QuantBinding {
-        default_rounding: Rounding::NearestTiesToEven,
-        overflow_policy: OverflowPolicy::Reject,
-        scales: scales.to_vec(),
-        activation_tables_commitment: activation_tables_commitment(tables),
-    }
-    .commitment();
-    let planner_config_commitment = PlannerBinding {
-        horizon: 0,
-        action_block: 0,
-        candidate_count: 0,
-        tie_break_rule_id: 0,
-    }
-    .commitment();
+    let quantization_commitment =
+        QuantBinding::v0(scales.to_vec(), activation_tables_commitment(tables)).commitment();
+    let planner_config_commitment = PlannerBinding::p0_sentinel().commitment();
     let input_commitment = predictor_inputs_commitment(inputs);
 
     // 4. Claimed output tensor + commitment.

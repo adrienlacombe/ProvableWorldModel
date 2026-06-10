@@ -2,11 +2,13 @@
 //! Blake2s commitments for the model, quantization, and planner config, and the
 //! weight Merkle root (RFC-0014 §3).
 //!
-//! V0 fixes one hash primitive (Blake2s-256) for every commitment, matching the
-//! vendored Stwo channel. Each commitment is **domain-separated and
-//! length-prefixed** so a model digest can never collide with a quantization,
+//! V0 fixes one hash primitive (Blake2s-256) for every commitment. Blake2s is the
+//! native sponge of the Fiat-Shamir transcript, so the prover and the `no_std`
+//! verifier share exactly one hash implementation. Each commitment is
+//! **domain-separated and length-prefixed** so a model digest can never collide
+//! with a quantization,
 //! planner, output, or tensor digest. Each commitment binds exactly the fields
-//! the soundness argument requires (`docs/spec/06-security.md#binding-requirements`):
+//! the soundness argument requires (`specs.md §13`):
 //! changing any bound field changes the commitment.
 
 use alloc::vec::Vec;
@@ -140,6 +142,19 @@ impl CanonicalEncode for ModelBinding {
 }
 
 impl ModelBinding {
+    /// The V0 model binding for a given architecture sub-commitment and weight root,
+    /// pinning the V0 relation and serialization versions the prover and verifier
+    /// must agree on. The single constructor both sides call, so a version bump
+    /// changes one place instead of drifting across call sites.
+    pub fn v0(architecture_commitment: [u8; 32], weights_root: [u8; 32]) -> Self {
+        ModelBinding {
+            architecture_commitment,
+            weights_root,
+            relation_version: crate::audit::RELATION_VERSION,
+            serialization_version: crate::audit::SERIALIZATION_VERSION,
+        }
+    }
+
     /// `commit(TAG_MODEL, canonical_bytes(self))`.
     pub fn commitment(&self) -> [u8; 32] {
         commit(TAG_MODEL, &canonical_bytes(self))
@@ -170,6 +185,18 @@ impl CanonicalEncode for QuantBinding {
 }
 
 impl QuantBinding {
+    /// The V0 quantization binding: round-nearest-ties-even and overflow=reject (the
+    /// only V0 policies), for the given scale table and committed-tables commitment.
+    /// Pins the two policy fields so they cannot diverge between prover and verifier.
+    pub fn v0(scales: Vec<Scale>, activation_tables_commitment: [u8; 32]) -> Self {
+        QuantBinding {
+            default_rounding: Rounding::NearestTiesToEven,
+            overflow_policy: OverflowPolicy::Reject,
+            scales,
+            activation_tables_commitment,
+        }
+    }
+
     /// `commit(TAG_QUANT, canonical_bytes(self))`.
     pub fn commitment(&self) -> [u8; 32] {
         commit(TAG_QUANT, &canonical_bytes(self))
@@ -200,6 +227,17 @@ impl CanonicalEncode for PlannerBinding {
 }
 
 impl PlannerBinding {
+    /// The P0/V0 planner sentinel: an all-zero config (no planner). The single
+    /// definition of the "no planner" binding the P0 prover and verifier both bind.
+    pub fn p0_sentinel() -> Self {
+        PlannerBinding {
+            horizon: 0,
+            action_block: 0,
+            candidate_count: 0,
+            tie_break_rule_id: 0,
+        }
+    }
+
     /// `commit(TAG_PLANNER, canonical_bytes(self))`.
     pub fn commitment(&self) -> [u8; 32] {
         commit(TAG_PLANNER, &canonical_bytes(self))

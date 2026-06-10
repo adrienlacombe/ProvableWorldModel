@@ -63,7 +63,7 @@ fn committed_golden_vectors() {
 fn round_trips() {
     roundtrip(&0u32);
     roundtrip(&u64::MAX);
-    roundtrip(&(-123456789i64));
+    roundtrip(&(-123_456_789i64));
     roundtrip(&true);
     roundtrip(&[0xABu8; 32]);
     roundtrip(&M31::from_u32_unchecked(2_147_483_646)); // P - 1, canonical max

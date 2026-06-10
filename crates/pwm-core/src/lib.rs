@@ -26,6 +26,10 @@ pub mod freivalds;
 pub mod graph;
 pub mod limb;
 pub mod manifest;
+/// Observability schema (off-by-default `obs` feature). Data-only types with no
+/// live producer yet (#67); off by default so the no_std verifier trust root
+/// carries none of it. CI exercises it via `cargo test --all-features`.
+#[cfg(feature = "obs")]
 pub mod obs;
 pub mod planning;
 pub mod predictor;

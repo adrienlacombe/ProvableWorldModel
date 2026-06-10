@@ -317,6 +317,9 @@ mod tests {
     fn predictor_proves_and_verifies() {
         let (proof, next) = prove();
         assert_eq!(next.len(), SEQ * DIM);
+        // Pin the predicted next latent (deterministic from the committed weights,
+        // tables, and inputs): an is_ok() smoke test would miss silent kernel drift.
+        assert_eq!(&next[(SEQ - 1) * DIM..], &[3905, 1802]);
         assert!(verify(&proof).is_ok());
     }
 
@@ -400,12 +403,15 @@ mod tests {
         use pwm_verifier::{verify_predictor, VerifyError as VE};
         let mut art = committed_artifact();
         // Replace fc1 (weight_id 14) without updating the committed model_commitment.
-        for t in art.weights.iter_mut() {
+        for t in &mut art.weights {
             if t.tensor_id() == 14 {
                 *t = w(14, 4, 2, &[2, 0, 0, 1, 1, 1, 1, -1]);
             }
         }
-        assert_eq!(verify_predictor(&art), Err(VE::CommitmentMismatch("model")));
+        assert_eq!(
+            verify_predictor(&art),
+            Err(VE::CommitmentMismatch(pwm_verifier::CommitmentKind::Model))
+        );
     }
 
     #[test]
@@ -416,7 +422,9 @@ mod tests {
         art.tables[0].outputs[0] += 1;
         assert_eq!(
             verify_predictor(&art),
-            Err(VE::CommitmentMismatch("quantization"))
+            Err(VE::CommitmentMismatch(
+                pwm_verifier::CommitmentKind::Quantization
+            ))
         );
     }
 
@@ -428,7 +436,7 @@ mod tests {
         art.inputs[0].1[0] += 1;
         assert_eq!(
             verify_predictor(&art),
-            Err(VE::CommitmentMismatch("inputs"))
+            Err(VE::CommitmentMismatch(pwm_verifier::CommitmentKind::Inputs))
         );
     }
 
@@ -437,7 +445,7 @@ mod tests {
         use pwm_verifier::{verify_predictor, VerifyError as VE};
         let mut art = committed_artifact();
         let mut forged = None;
-        for op in art.block.ops.iter_mut() {
+        for op in &mut art.block.ops {
             if let BlockOp::BatchedLinear { op_id, out, .. } = op {
                 out[0] += 1;
                 forged = Some(*op_id);
@@ -457,7 +465,7 @@ mod tests {
         use pwm_verifier::{verify_predictor, VerifyError as VE};
         let mut art = committed_artifact();
         let mut forged = None;
-        for op in art.block.ops.iter_mut() {
+        for op in &mut art.block.ops {
             if let BlockOp::BatchedLinear { op_id, out, .. } = op {
                 out[0] += FREIVALDS_P as i64;
                 forged = Some(*op_id);

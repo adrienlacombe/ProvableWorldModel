@@ -55,31 +55,10 @@ pub fn dims_within_soundness_margin(cols: usize) -> bool {
     127i128 * (cols as i128) * b + 2 * b < FREIVALDS_P as i128
 }
 
-/// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an int8 slice.
-pub fn dot_fp_i8(coeffs: &[Fp61], vals: &[i8]) -> Fp61 {
-    debug_assert_eq!(coeffs.len(), vals.len());
-    let mut acc = Fp61::ZERO;
-    for (&c, &x) in coeffs.iter().zip(vals.iter()) {
-        acc = acc.add(c.mul(Fp61::from_i64(x as i64)));
-    }
-    acc
-}
-
-/// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an i32 slice (int16
-/// activations or i32 accumulators).
-pub fn dot_fp_i32(coeffs: &[Fp61], vals: &[i32]) -> Fp61 {
-    debug_assert_eq!(coeffs.len(), vals.len());
-    let mut acc = Fp61::ZERO;
-    for (&c, &z) in coeffs.iter().zip(vals.iter()) {
-        acc = acc.add(c.mul(Fp61::from_i64(z as i64)));
-    }
-    acc
-}
-
 /// `Σ_i coeffs[i] · vals[i]` over `F_p`, with `vals` an i64 slice. Trace records
 /// store activation/accumulator vectors uniformly as `i64`, so this is the
 /// general dot used by the verifier's Freivalds checks.
-pub fn dot_fp_i64(coeffs: &[Fp61], vals: &[i64]) -> Fp61 {
+pub(crate) fn dot_fp_i64(coeffs: &[Fp61], vals: &[i64]) -> Fp61 {
     debug_assert_eq!(coeffs.len(), vals.len());
     let mut acc = Fp61::ZERO;
     for (&c, &z) in coeffs.iter().zip(vals.iter()) {
@@ -117,6 +96,11 @@ pub fn check_linear_biased(v: &[Fp61], x: &[i64], bias: &[i64], r: &[Fp61], out:
 /// `weight` is row-major `W[row * cols + col]`, shape `(rows, cols)`. `r` has
 /// length `rows` (the output dimension); the returned `v` has length `cols` (the
 /// input dimension). Cost `O(rows·cols)`, paid **once** per weight matrix.
+///
+/// # Panics
+///
+/// Panics if `r.len() != rows` or `weight.len() != rows * cols` (a caller-side
+/// shape error, not attacker input).
 pub fn precompute_v(r: &[Fp61], weight: &[i8], rows: usize, cols: usize) -> Vec<Fp61> {
     assert_eq!(r.len(), rows, "r length must equal the output dimension");
     assert_eq!(weight.len(), rows * cols, "weight size must be rows * cols");
@@ -132,20 +116,6 @@ pub fn precompute_v(r: &[Fp61], weight: &[i8], rows: usize, cols: usize) -> Vec<
     v
 }
 
-/// Verify one matmul instance `z =? W·x`: returns true iff `v · x == r · z`.
-///
-/// `v = precompute_v(r, W, rows, cols)` (length `cols`), `x` is the int8 input
-/// (length `cols`), `r` is the challenge (length `rows`), `z` is the claimed i32
-/// accumulator output (length `rows`).
-pub fn check(v: &[Fp61], x: &[i8], r: &[Fp61], z: &[i32]) -> bool {
-    dot_fp_i8(v, x) == dot_fp_i32(r, z)
-}
-
-/// Like [`check`] but with an int16/i32 input `x` (int16 activations).
-pub fn check_i32(v: &[Fp61], x: &[i32], r: &[Fp61], z: &[i32]) -> bool {
-    dot_fp_i32(v, x) == dot_fp_i32(r, z)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,53 +124,51 @@ mod tests {
         alloc::vec![Fp61::new(10), Fp61::new(20), Fp61::new(30)]
     }
 
+    /// No-bias Freivalds check through the real (range-guarded) API.
+    fn check0(v: &[Fp61], x: &[i64], r: &[Fp61], out: &[i64]) -> bool {
+        let bias = alloc::vec![0i64; out.len()];
+        check_linear_biased(v, x, &bias, r, out)
+    }
+
     #[test]
     fn accepts_correct_output() {
         // W = [[1,2],[3,4],[5,6]], x = [7,8]; z = W·x = [23, 53, 83].
         let w: [i8; 6] = [1, 2, 3, 4, 5, 6];
-        let x: [i8; 2] = [7, 8];
-        let z: [i32; 3] = [23, 53, 83];
         let r = r3();
         let v = precompute_v(&r, &w, 3, 2);
-        assert!(check(&v, &x, &r, &z));
+        assert!(check0(&v, &[7, 8], &r, &[23, 53, 83]));
     }
 
     #[test]
     fn rejects_wrong_output() {
         let w: [i8; 6] = [1, 2, 3, 4, 5, 6];
-        let x: [i8; 2] = [7, 8];
-        let z: [i32; 3] = [23, 53, 84]; // 84 != 83
         let r = r3();
         let v = precompute_v(&r, &w, 3, 2);
-        assert!(!check(&v, &x, &r, &z));
+        assert!(!check0(&v, &[7, 8], &r, &[23, 53, 84])); // 84 != 83
     }
 
     #[test]
     fn handles_negative_weights() {
         // W = [[-1,2],[3,-4]], x=[3,7]; z = [-1*3+2*7, 3*3-4*7] = [11, -19].
         let w: [i8; 4] = [-1, 2, 3, -4];
-        let x: [i8; 2] = [3, 7];
-        let z: [i32; 2] = [11, -19];
         let r = alloc::vec![Fp61::new(5), Fp61::new(10)];
         let v = precompute_v(&r, &w, 2, 2);
-        assert!(check(&v, &x, &r, &z));
+        assert!(check0(&v, &[3, 7], &r, &[11, -19]));
     }
 
     #[test]
     fn identity_matrix() {
         let w: [i8; 9] = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-        let x: [i8; 3] = [10, 20, 30];
-        let z: [i32; 3] = [10, 20, 30];
         let r = alloc::vec![Fp61::new(42), Fp61::new(99), Fp61::new(7)];
         let v = precompute_v(&r, &w, 3, 3);
-        assert!(check(&v, &x, &r, &z));
+        assert!(check0(&v, &[10, 20, 30], &r, &[10, 20, 30]));
     }
 
     /// Deterministic LCG for seeded pseudo-random fuzzing (no_std, no rand dep).
     fn lcg(state: &mut u64) -> u64 {
         *state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         *state
     }
 
@@ -212,29 +180,25 @@ mod tests {
         for _ in 0..200 {
             let rows = 1 + (lcg(&mut s) % 6) as usize;
             let cols = 1 + (lcg(&mut s) % 6) as usize;
-            let w: alloc::vec::Vec<i8> = (0..rows * cols)
+            let w: Vec<i8> = (0..rows * cols)
                 .map(|_| (lcg(&mut s) % 255) as i64 as i8)
                 .collect();
-            let x: alloc::vec::Vec<i8> = (0..cols)
-                .map(|_| (lcg(&mut s) % 255) as i64 as i8)
+            let x: Vec<i64> = (0..cols)
+                .map(|_| (lcg(&mut s) % 255) as i64 as i8 as i64)
                 .collect();
-            let r: alloc::vec::Vec<Fp61> = (0..rows).map(|_| Fp61::new(lcg(&mut s))).collect();
-            // Correct z = W·x.
-            let z: alloc::vec::Vec<i32> = (0..rows)
-                .map(|i| {
-                    (0..cols)
-                        .map(|j| w[i * cols + j] as i32 * x[j] as i32)
-                        .sum()
-                })
+            let r: Vec<Fp61> = (0..rows).map(|_| Fp61::new(lcg(&mut s))).collect();
+            // Correct z = W·x (well within the single-M31 accumulator envelope).
+            let z: Vec<i64> = (0..rows)
+                .map(|i| (0..cols).map(|j| w[i * cols + j] as i64 * x[j]).sum())
                 .collect();
             let v = precompute_v(&r, &w, rows, cols);
-            assert!(check(&v, &x, &r, &z), "correct z must verify");
+            assert!(check0(&v, &x, &r, &z), "correct z must verify");
             // Corrupt one element: must be rejected (challenge is random, so the
             // 1/p escape probability is negligible across these cases).
             let k = (lcg(&mut s) as usize) % rows;
             let mut bad = z.clone();
             bad[k] = bad[k].wrapping_add(1);
-            assert!(!check(&v, &x, &r, &bad), "corrupted z must be rejected");
+            assert!(!check0(&v, &x, &r, &bad), "corrupted z must be rejected");
         }
     }
 }

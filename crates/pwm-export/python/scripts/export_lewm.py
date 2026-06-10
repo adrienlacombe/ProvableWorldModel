@@ -31,7 +31,8 @@ import torch.nn as nn
 sys.path.insert(0, os.environ.get("LEWM_PATH", "./le-wm"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from module import ARPredictor, Embedder, MLP  # upstream le-wm
+from module import MLP, ARPredictor, Embedder  # upstream le-wm
+
 from pwm_export import export, fold, ingest, lewm, quantize
 
 # V0 config (specs.md §2 / config/train/model/lewm.yaml).

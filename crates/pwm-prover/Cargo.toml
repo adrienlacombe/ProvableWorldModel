@@ -8,6 +8,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["proof-system", "prover", "world-model", "commit-and-audit"]
+categories = ["cryptography", "science"]
 
 [dependencies]
 pwm-core = { workspace = true }

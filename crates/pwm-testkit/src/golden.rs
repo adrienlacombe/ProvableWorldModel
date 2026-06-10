@@ -2,7 +2,7 @@
 //! Loader for committed golden-vector fixtures.
 //!
 //! Golden vectors are the differential oracle of the test stack
-//! (`docs/spec/07-testing-strategy.md#golden-vectors`): the Python fixed-point
+//! (`specs.md §15`): the Python fixed-point
 //! reference (layer 2) emits them and the Rust fixed-point reference (layer 3)
 //! must reproduce every integer bit-for-bit (INV-TEST-02/06, tolerance zero).
 //!
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Pins the provenance of the vectors so a fixture is meaningful only for the
 /// exact relation and quantization it was generated against
-/// (`docs/spec/07-testing-strategy.md#generation-storage-and-versioning`).
+/// (`specs.md §15`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GoldenHeader {
     /// Immutable relation identity, e.g. `pwm.lewm.predictor_step.v1`.

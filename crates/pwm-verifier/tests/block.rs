@@ -48,8 +48,8 @@ fn tables() -> Vec<ActivationTable> {
     ]
 }
 
-const CLO: i64 = -100000;
-const CHI: i64 = 100000;
+const CLO: i64 = -100_000;
+const CHI: i64 = 100_000;
 
 /// The structural block (op `out` fields are placeholders, filled by prove_block).
 fn block_spec() -> Block {
@@ -149,7 +149,7 @@ fn accept_adaln_gated_ffn_block() {
 fn reject_tampered_block_linear() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the fc1 linear output (op_id 7) -> Freivalds rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::Linear { op_id: 7, out, .. } = op {
             out[0] += 1;
         }
@@ -235,7 +235,7 @@ fn reject_tampered_attention_scores() {
     let mut proven =
         prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
     // Tamper the QKᵀ scores (op_id 1) -> exact matmul recompute rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::MatMul { op_id: 1, out, .. } = op {
             out[0] += 1;
         }
@@ -469,7 +469,7 @@ fn reject_tampered_encoder_projection() {
 fn reject_tampered_block_residual() {
     let mut proven = prove_block(&block_spec(), &weights(), &tables(), &inputs()).unwrap();
     // Tamper the residual add output (op_id 11) -> exact recompute rejects.
-    for op in proven.ops.iter_mut() {
+    for op in &mut proven.ops {
         if let BlockOp::Add { op_id: 11, out, .. } = op {
             out[0] += 5;
         }
@@ -504,5 +504,179 @@ fn reject_out_of_range_shift() {
     assert!(matches!(
         verify_block(&block, &[], &[], &inputs),
         Err(VerifyError::InvalidShift { op_id: 7 })
+    ));
+}
+
+// --- per-variant reject coverage: tampering any op's claimed output is caught ---
+
+/// Prove `block`, bump `out[0]` of the op with `op_id`, and return the verdict.
+fn tamper_op(
+    block: &Block,
+    weights: &[Tensor],
+    tables: &[ActivationTable],
+    inputs: &[(u32, Vec<i64>)],
+    op_id: u32,
+) -> Result<Vec<i64>, VerifyError> {
+    let mut proven = prove_block(block, weights, tables, inputs).unwrap();
+    let op = proven
+        .ops
+        .iter_mut()
+        .find(|o| o.op_id() == op_id)
+        .expect("op_id present in block");
+    let mut out = op.out().to_vec();
+    out[0] += 1;
+    op.set_out(out);
+    verify_block(&proven, weights, tables, inputs)
+}
+
+#[test]
+fn reject_tampered_elementwise_op_outputs() {
+    // block_spec covers Activation (op 1), LayerNorm (5), Modulate (6), Gate (10);
+    // each exact-recompute op must reject a one-off output with its own op id.
+    for op_id in [1u32, 5, 6, 10] {
+        assert!(
+            matches!(
+                tamper_op(&block_spec(), &weights(), &tables(), &inputs(), op_id),
+                Err(VerifyError::BlockOpMismatch { op_id: id }) if id == op_id
+            ),
+            "tampering op {op_id} must reject with BlockOpMismatch"
+        );
+    }
+    // Softmax (op 2) via the attention block.
+    assert!(matches!(
+        tamper_op(
+            &attention_block(),
+            &[],
+            &exp_tables(),
+            &attention_inputs(),
+            2
+        ),
+        Err(VerifyError::BlockOpMismatch { op_id: 2 })
+    ));
+}
+
+#[test]
+fn reject_tampered_slice_and_concat() {
+    // Slice a 4-vector into halves, then concat them back; tampering either op rejects.
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![
+            BlockOp::Slice {
+                op_id: 1,
+                in_buf: 0,
+                out_buf: 1,
+                start: 0,
+                len: 2,
+                out: vec![],
+            },
+            BlockOp::Slice {
+                op_id: 2,
+                in_buf: 0,
+                out_buf: 2,
+                start: 2,
+                len: 2,
+                out: vec![],
+            },
+            BlockOp::Concat {
+                op_id: 3,
+                in_bufs: vec![1, 2],
+                out_buf: 3,
+                out: vec![],
+            },
+        ],
+        output_buf: 3,
+    };
+    let inputs = vec![(0u32, vec![10, 20, 30, 40])];
+    let proven = prove_block(&block, &[], &[], &inputs).unwrap();
+    assert_eq!(
+        verify_block(&proven, &[], &[], &inputs).unwrap(),
+        vec![10, 20, 30, 40]
+    );
+    assert!(matches!(
+        tamper_op(&block, &[], &[], &inputs, 1),
+        Err(VerifyError::BlockOpMismatch { op_id: 1 })
+    ));
+    assert!(matches!(
+        tamper_op(&block, &[], &[], &inputs, 3),
+        Err(VerifyError::BlockOpMismatch { op_id: 3 })
+    ));
+}
+
+// --- typed boundary rejections (WQ-07): domain, missing buffer, invalid shift ---
+
+#[test]
+fn reject_activation_outside_table_domain() {
+    // The Activation input (5) lies outside the committed table domain [0, 2].
+    let table = ActivationTable {
+        table_id: 0,
+        lo: 0,
+        outputs: vec![0, 1, 2],
+    };
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::Activation {
+            op_id: 1,
+            table_id: 0,
+            in_buf: 0,
+            out_buf: 1,
+            out: vec![0],
+        }],
+        output_buf: 1,
+    };
+    let inputs = vec![(0u32, vec![5])];
+    assert!(matches!(
+        verify_block(&block, &[], &[table], &inputs),
+        Err(VerifyError::ActivationDomain { table_id: 0 })
+    ));
+}
+
+#[test]
+fn reject_block_op_reading_undeclared_buffer() {
+    // The Add reads buffer 99, which is never seeded or written.
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::Add {
+            op_id: 1,
+            a_buf: 0,
+            b_buf: 99,
+            out_buf: 1,
+            out: vec![0, 0],
+        }],
+        output_buf: 1,
+    };
+    let inputs = vec![(0u32, vec![1, 2])];
+    assert!(matches!(
+        verify_block(&block, &[], &[], &inputs),
+        Err(VerifyError::MissingBuffer { buf: 99 })
+    ));
+}
+
+#[test]
+fn reject_layernorm_out_of_range_shift() {
+    // A LayerNorm shift past MAX_SHIFT is rejected before any compute (InvalidShift).
+    let table = ActivationTable {
+        table_id: 0,
+        lo: 0,
+        outputs: (0..1000).collect(),
+    };
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::LayerNorm {
+            op_id: 4,
+            table_id: 0,
+            in_buf: 0,
+            out_buf: 1,
+            out: vec![0, 0],
+            shift: 63,
+            clamp_lo: -100,
+            clamp_hi: 100,
+            rounding: RND,
+        }],
+        output_buf: 1,
+    };
+    let inputs = vec![(0u32, vec![1, 2])];
+    assert!(matches!(
+        verify_block(&block, &[], &[table], &inputs),
+        Err(VerifyError::InvalidShift { op_id: 4 })
     ));
 }

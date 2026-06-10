@@ -2,7 +2,7 @@
 //! Span-tree scaffolding: the canonical, normative span names and nesting.
 //!
 //! The pipeline is instrumented with spans whose names and nesting are normative
-//! (`docs/spec/05-observability.md#span-tree`), so a flamegraph reads identically
+//! (`docs/legacy-stark/spec/05-observability.md (archived)`), so a flamegraph reads identically
 //! across runs and contributors. This module owns the names and the canonical
 //! `trace_build.<component>` execution order; the `tracing` instrumentation that
 //! opens/closes them lives on the prove/verify path (#67). Span attributes obey
@@ -41,7 +41,7 @@ pub const SPAN_APP_CHECKS: &str = "app_checks";
 pub const TRACE_BUILD_PREFIX: &str = "trace_build.";
 
 /// The AIR components, in canonical trace-build execution order
-/// (`docs/spec/01-architecture.md#component-model`). `cem` is P3-only and out of
+/// (`specs.md §11`). `cem` is P3-only and out of
 /// V0 scope, so it is excluded here.
 pub const TRACE_BUILD_COMPONENTS: &[&str] = &[
     "range_check",

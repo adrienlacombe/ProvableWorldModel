@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The accept/reject (dual-test) harness.
 //!
-//! Implements the rule from `docs/spec/07-testing-strategy.md#0-why-testing-is-load-bearing-here`
+//! Implements the rule from `specs.md §15`
 //! (INV-TEST-01): no component ships without **both** an accepting test (a valid
 //! witness verifies) and at least one rejecting test (a witness violating the
 //! component's contract is rejected with a *specific* typed error, INV-TEST-09).

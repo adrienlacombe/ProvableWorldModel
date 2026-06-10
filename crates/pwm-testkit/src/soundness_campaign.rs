@@ -20,7 +20,7 @@ use pwm_core::field::FREIVALDS_P;
 use pwm_core::fixed_point::{requantize, Rounding};
 use pwm_core::planning::verify_argmin;
 use pwm_core::trace::OpRecord;
-use pwm_verifier::verify;
+use pwm_verifier::{verify, VerifyError};
 
 use crate::demo::prove_demo;
 use crate::mutation::{Mutant, MutationCampaign, MutationOperator};
@@ -81,11 +81,34 @@ fn modp_accumulator_rejected() -> bool {
     verify(&art).is_err()
 }
 
+/// True iff breaking the op-to-op wiring is rejected (the `tensor_memory`
+/// component): bump a mid-trace record's first input cell while leaving the prior
+/// record's output intact, so the threaded running activation no longer matches.
+/// The verifier's wiring check (`VerifyError::WiringMismatch`) must fire — it runs
+/// before each op's own check, so this is the dedicated guard for trace memory
+/// consistency, which had no mutant before (INV-TEST-05).
+fn wiring_tamper_rejected() -> bool {
+    let mut art = prove_demo();
+    for rec in art.trace.iter_mut().skip(1) {
+        let input = match rec {
+            OpRecord::Linear(r) => &mut r.input,
+            OpRecord::Requant(r) => &mut r.input,
+            OpRecord::Activation(r) => &mut r.input,
+            OpRecord::LayerNorm(r) => &mut r.input,
+        };
+        if let Some(first) = input.first_mut() {
+            *first += 1;
+            return matches!(verify(&art), Err(VerifyError::WiringMismatch { .. }));
+        }
+    }
+    false
+}
+
 /// True iff tampering an exactly-recomputed op output is rejected. `select` picks
 /// the trace record to perturb (the requant or the activation).
 fn tampered_op_rejected(select: fn(&OpRecord) -> bool) -> bool {
     let mut art = prove_demo();
-    for rec in art.trace.iter_mut() {
+    for rec in &mut art.trace {
         if select(rec) {
             match rec {
                 OpRecord::Requant(r) => r.output[0] += 1,
@@ -106,6 +129,12 @@ impl MutationCampaign for SoundnessCampaign {
                 "range_check",
                 MutationOperator::DropConstraint,
                 "drop the Freivalds accumulator range guard: add p to an accumulator (mod-p aliasing)",
+            ),
+            mutant(
+                "tensor_memory.break_wiring",
+                "tensor_memory",
+                MutationOperator::DropConstraint,
+                "drop the op-to-op wiring check: a record's input no longer equals the prior output",
             ),
             mutant(
                 "requant.tamper_output",
@@ -137,6 +166,7 @@ impl MutationCampaign for SoundnessCampaign {
     fn is_killed(&self, mutant: &Mutant) -> bool {
         match mutant.id.as_str() {
             "range_check.modp_accumulator" => modp_accumulator_rejected(),
+            "tensor_memory.break_wiring" => wiring_tamper_rejected(),
             "requant.tamper_output" => tampered_op_rejected(|r| matches!(r, OpRecord::Requant(_))),
             "activation_lookup.tamper_output" => {
                 tampered_op_rejected(|r| matches!(r, OpRecord::Activation(_)))

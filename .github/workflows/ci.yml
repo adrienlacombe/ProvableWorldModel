@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
           components: rustfmt
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
           components: clippy
@@ -54,11 +54,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features --locked
+      # Gate the headline claim: prove+verify the full 192-dim/6-block/16-head
+      # predictor. It is #[ignore]d for the default (debug) run because it is heavy
+      # in debug; in release it takes ~0.1 s.
+      - name: Full-dims predictor (ignored, release)
+        run: cargo test --workspace --all-features --release --locked -- --ignored
 
   msrv:
     name: MSRV (Rust 1.85)
@@ -68,7 +73,7 @@ jobs:
       # The workspace pins rust-version = "1.85"; verify the first-party crates
       # actually build on that floor (a dependency or syntax bump that needs a
       # newer compiler must be a deliberate MSRV change, not a silent drift).
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "1.85"
       - uses: Swatinem/rust-cache@v2
@@ -79,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
@@ -95,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
       - uses: Swatinem/rust-cache@v2
@@ -114,6 +119,9 @@ jobs:
         run: |
           python3 -m pip install --quiet numpy
           python3 crates/pwm-export/python/tests/test_export_pipeline.py
+      # Python lint (config in crates/pwm-export/python/pyproject.toml). Pinned ruff.
+      - name: Python lint (ruff)
+        run: pipx run ruff==0.15.16 check crates/pwm-export/python
 
   license:
     name: License / SPDX
@@ -134,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # pinned (no semver tags; SHA of master @ stable)
         with:
           toolchain: "stable"
       - uses: Swatinem/rust-cache@v2

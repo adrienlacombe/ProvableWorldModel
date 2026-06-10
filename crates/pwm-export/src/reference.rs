@@ -197,32 +197,21 @@ impl Model {
             }
             let w = layer.weight.data();
             let bias: Vec<i64> = match &layer.bias {
-                Some(b) => b.data().iter().map(|c| c.value()).collect(),
+                Some(b) => b.data().iter().map(pwm_core::BoundedInt::value).collect(),
                 None => vec![0i64; rows],
             };
-            let out_acc: Vec<i64> = bias
-                .iter()
-                .enumerate()
-                .map(|(r, &b)| {
-                    let base = r * cols;
-                    let mut acc = b;
-                    for c in 0..cols {
-                        acc += w[base + c].value() * current[c];
-                    }
-                    acc
-                })
-                .collect();
+            let out_acc = pwm_core::predictor::linear(w, &current, &bias, rows, cols);
             ops.push(OpSpec::Linear {
                 op_id: layer.linear_op_id,
                 weight_id: layer.weight.tensor_id(),
-                bias_id: layer.bias.as_ref().map(|b| b.tensor_id()),
+                bias_id: layer.bias.as_ref().map(pwm_core::Tensor::tensor_id),
                 rows: rows as u32,
                 cols: cols as u32,
             });
             trace.push(OpRecord::Linear(LinearRec {
                 op_id: layer.linear_op_id,
                 weight_id: layer.weight.tensor_id(),
-                bias_id: layer.bias.as_ref().map(|b| b.tensor_id()),
+                bias_id: layer.bias.as_ref().map(pwm_core::Tensor::tensor_id),
                 input: current.clone(),
                 output: out_acc.clone(),
             }));

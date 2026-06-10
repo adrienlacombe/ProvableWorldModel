@@ -43,7 +43,7 @@ def test_ingest_rejects_wrong_shape():
     arrays["pred_proj.fc1"] = np.zeros((192, 191))  # off by one
     try:
         ingest.extract_v0_subgraph(arrays)
-        assert False, "expected shape mismatch"
+        raise AssertionError("expected shape mismatch")
     except ValueError as e:
         assert "pred_proj.fc1" in str(e)
 
@@ -53,7 +53,7 @@ def test_ingest_rejects_missing_param():
     del arrays["predictor.blocks.3.attn.wv"]
     try:
         ingest.extract_v0_subgraph(arrays)
-        assert False, "expected missing param"
+        raise AssertionError("expected missing param")
     except KeyError as e:
         assert "blocks.3.attn.wv" in str(e)
 
@@ -176,7 +176,7 @@ def test_lewm_adapter_rejects_wrong_shape():
     params["pred_proj.net.3.weight"] = np.zeros((192, 2047))
     try:
         lewm.extract_v0_linears(params)
-        assert False, "expected shape mismatch"
+        raise AssertionError("expected shape mismatch")
     except ValueError as e:
         assert "pred_proj.net.3.weight" in str(e)
 

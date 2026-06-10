@@ -9,8 +9,11 @@
 //! runtime. Export is an offline, trusted preprocessing step that produces a
 //! *committed* manifest; neither the prover nor the verifier re-runs it.
 //!
-//! This crate is `std` (host-side tooling) and is a leaf of the dependency DAG:
-//! nothing depends on it, which keeps PyTorch out of the verifier (INV-ARCH-02).
+//! This crate is `std` (host-side tooling). The **verifier trust root does not
+//! depend on it**: `pwm-verifier` pulls it in only as a dev-dependency for
+//! end-to-end tests, which is what keeps PyTorch and the float reference out of the
+//! verifier (INV-ARCH-02). `pwm-prover` and `pwm-testkit` depend on it normally for
+//! the integer reference inference.
 //!
 //! The `reference` module (integer reference inference + trace builder) lands
 //! here; quantization, the manifest writer, and the data adapter follow per the

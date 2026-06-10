@@ -3,7 +3,7 @@
 """Prepare a release: bump the workspace version and roll the changelog.
 
 Automates the mechanical, error-prone parts of cutting a release
-(``docs/spec/09-release-and-versioning.md``):
+(``docs/legacy-stark/spec/09-release-and-versioning.md``):
 
 1. Validates the target version is semver-conformant and a forward bump.
 2. Sets ``[workspace.package].version`` and every ``[workspace.dependencies]``

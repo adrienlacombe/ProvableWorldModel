@@ -9,7 +9,7 @@ use super::json;
 use super::value::LoggableValue;
 use crate::relation::StatementType;
 
-/// Log schema version defined by this spec (`docs/spec/05-observability.md`).
+/// Log schema version defined by this spec (`docs/legacy-stark/spec/05-observability.md (archived)`).
 pub const LOG_SCHEMA_VERSION: u32 = 1;
 
 /// Severity level. Ordered most-severe first; see [`Level::should_emit`].
@@ -27,7 +27,7 @@ pub enum Level {
     Trace,
 }
 
-/// The default emit threshold (`docs/spec/05-observability.md#level-policy`).
+/// The default emit threshold (`docs/legacy-stark/spec/05-observability.md (archived)`).
 pub const DEFAULT_LEVEL: Level = Level::Info;
 
 impl Level {
@@ -119,7 +119,7 @@ impl Outcome {
 }
 
 /// The shape of a tensor touched by a stage. Structural metadata only — never the
-/// tensor's values (`docs/spec/05-observability.md#redaction`).
+/// tensor's values (`docs/legacy-stark/spec/05-observability.md (archived)`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape {
     /// Logical tensor identifier.
@@ -133,7 +133,7 @@ pub struct Shape {
 /// Structural counts a record may carry. Each is derived from witness
 /// *structure* (shapes, op counts, table sizes), never witness *values*
 /// (INV-OBS-03). Field names match the named metric set
-/// (`docs/spec/05-observability.md#metrics`).
+/// (`docs/legacy-stark/spec/05-observability.md (archived)`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Counts {
     /// Number of exported tensors.
@@ -159,7 +159,7 @@ pub struct Counts {
 }
 
 /// One structured log record, serialized as a single line of JSON
-/// (`docs/spec/05-observability.md#record-schema`). No field of this struct may
+/// (`docs/legacy-stark/spec/05-observability.md (archived)`). No field of this struct may
 /// ever hold a private witness value (INV-OBS-01); structural detail lives in
 /// typed [`Counts`]/[`Shape`] and in `fields`, constrained to [`LoggableValue`].
 #[derive(Debug, Clone, PartialEq)]
@@ -241,7 +241,7 @@ impl LogRecord {
     }
 
     /// Validate that a *terminal* record carries every field required for its
-    /// stage (`docs/spec/05-observability.md#per-stage-required-fields`). Returns
+    /// stage (`docs/legacy-stark/spec/05-observability.md (archived)`). Returns
     /// the list of missing requirements, empty when the record is complete.
     pub fn missing_terminal_fields(&self) -> Vec<RequiredField> {
         let mut missing = Vec::new();
@@ -526,7 +526,7 @@ impl CountField {
 }
 
 /// The fields a terminal record must carry for `stage`, per the per-stage table
-/// in `docs/spec/05-observability.md#per-stage-required-fields`. The Verify
+/// in `docs/legacy-stark/spec/05-observability.md (archived)`. The Verify
 /// `error_code`-on-reject requirement is applied separately by
 /// [`LogRecord::missing_terminal_fields`].
 pub fn required_terminal_fields(stage: Stage) -> &'static [RequiredField] {

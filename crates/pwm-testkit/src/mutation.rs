@@ -2,7 +2,7 @@
 //! Constraint-mutation runner skeleton (layer 8, INV-TEST-05).
 //!
 //! Mutation testing measures whether the *constraint suite* is strong enough to
-//! be sound (`docs/spec/07-testing-strategy.md#mutation-tests`): perturb one
+//! be sound (`specs.md §15`): perturb one
 //! constraint at a time and confirm the reject suite notices. A mutant the suite
 //! still accepts is a **surviving mutant** — a soundness gap.
 //!
@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 /// A single-constraint mutation operator. Exactly one is applied per run
-/// (`docs/spec/07-testing-strategy.md#mutation-tests`).
+/// (`specs.md §15`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MutationOperator {
     /// Remove an addend from a constraint polynomial.
@@ -39,7 +39,8 @@ pub enum MutationOperator {
 pub struct Mutant {
     /// Stable identifier, unique within a campaign (used to match the baseline).
     pub id: String,
-    /// The `pwm-air` / `pwm-circuits` component the constraint belongs to.
+    /// The component the constraint belongs to (`pwm-core` / `pwm-prover` /
+    /// `pwm-verifier`), e.g. `"freivalds"`, `"requant"`, `"argmin"`.
     pub component: String,
     /// The operator applied.
     pub operator: MutationOperator,
@@ -48,7 +49,7 @@ pub struct Mutant {
 }
 
 /// Components held to a 100%-kill bar: a survivor in any of these is a direct
-/// unsoundness (`docs/spec/07-testing-strategy.md#target-and-gate`, INV-TEST-05).
+/// unsoundness (`specs.md §15`, INV-TEST-05).
 pub const SOUNDNESS_CRITICAL: &[&str] = &[
     "requant",
     "range_check",
@@ -79,7 +80,7 @@ pub trait MutationCampaign {
     fn mutants(&self) -> Vec<Mutant>;
 
     /// Decide whether `mutant` is killed: true iff applying it makes at least one
-    /// rejecting test fail (`docs/spec/07-testing-strategy.md#mechanism`).
+    /// rejecting test fail (`specs.md §15`).
     fn is_killed(&self, mutant: &Mutant) -> bool;
 }
 

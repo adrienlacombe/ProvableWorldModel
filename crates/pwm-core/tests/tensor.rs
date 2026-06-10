@@ -110,5 +110,5 @@ fn validate_scale_rejects_element_exceeding_dtype() {
 fn dtype_ranges() {
     assert_eq!(Dtype::I8.range(), (-128, 127));
     assert_eq!(Dtype::I16.range(), (-32768, 32767));
-    assert_eq!(Dtype::I32.range(), (-2147483648, 2147483647));
+    assert_eq!(Dtype::I32.range(), (-2_147_483_648, 2_147_483_647));
 }

@@ -17,8 +17,9 @@ use pwm_core::fixed_point::{BoundedInt, Rounding};
 use pwm_core::tables::ActivationTable;
 use pwm_core::tensor::{Dtype, Scale, Tensor};
 use pwm_export::reference::{LayerSpec, Model};
-use pwm_prover::{prove_feedforward, OutputBinding};
-use serde_json::Value;
+use pwm_prover::{prove_feedforward, OutputBinding, ProveError};
+
+use crate::bundle::{self, BundleError};
 
 /// A loaded export bundle: the `pred_proj` head model and a real input latent.
 pub struct LewmBundle {
@@ -34,37 +35,54 @@ pub struct LewmBundle {
     pub mlp: usize,
 }
 
-fn ints(v: &Value) -> Vec<i64> {
-    v.as_array()
-        .expect("array")
-        .iter()
-        .map(|x| x.as_i64().expect("int"))
-        .collect()
-}
-
-fn i8_tensor(id: u32, rows: u32, cols: u32, scale_id: u32, data: &[i64]) -> Tensor {
+fn i8_tensor(
+    id: u32,
+    rows: u32,
+    cols: u32,
+    scale_id: u32,
+    data: &[i64],
+) -> Result<Tensor, BundleError> {
     let cells = data
         .iter()
-        .map(|&v| BoundedInt::new(v, -128, 127).expect("int8 weight"))
-        .collect();
-    Tensor::new(id, vec![rows, cols], scale_id, cells).expect("tensor")
+        .map(|&v| {
+            BoundedInt::new(v, -128, 127).map_err(|_| BundleError::WeightOutOfRange { value: v })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Tensor::new(id, vec![rows, cols], scale_id, cells).map_err(|_| BundleError::WrongType {
+        field: "fc weight",
+        expected: "a rows*cols tensor",
+    })
 }
 
-/// Parse an export bundle (JSON) into a provable `pred_proj` model + input.
-pub fn load_bundle(json: &str) -> LewmBundle {
-    let b: Value = serde_json::from_str(json).expect("bundle json");
-    let dim = b["dim"].as_u64().expect("dim") as u32;
-    let mlp = b["mlp"].as_u64().expect("mlp") as u32;
-    let fc1 = i8_tensor(10, mlp, dim, 0, &ints(&b["fc1"]["data"]));
-    let fc2 = i8_tensor(11, dim, mlp, 1, &ints(&b["fc2"]["data"]));
-    let input = ints(&b["input"]["data"]);
+/// Parse an export bundle (JSON) into a provable `pred_proj` model + input, or a
+/// [`BundleError`] describing what was malformed.
+pub fn load_bundle(json: &str) -> Result<LewmBundle, BundleError> {
+    let b = bundle::parse(json)?;
+    let dim = bundle::u64_at(&b, "dim")? as u32;
+    let mlp = bundle::u64_at(&b, "mlp")? as u32;
+    let fc1 = i8_tensor(
+        10,
+        mlp,
+        dim,
+        0,
+        &bundle::ints_at(bundle::field(&b, "fc1")?, "data")?,
+    )?;
+    let fc2 = i8_tensor(
+        11,
+        dim,
+        mlp,
+        1,
+        &bundle::ints_at(bundle::field(&b, "fc2")?, "data")?,
+    )?;
+    let input = bundle::ints_at(bundle::field(&b, "input")?, "data")?;
+    let gt = bundle::field(&b, "gelu_table")?;
     let gelu = ActivationTable {
-        table_id: b["gelu_table"]["table_id"].as_u64().expect("table_id") as u32,
-        lo: b["gelu_table"]["lo"].as_i64().expect("lo"),
-        outputs: ints(&b["gelu_table"]["outputs"]),
+        table_id: bundle::u64_at(gt, "table_id")? as u32,
+        lo: bundle::i64_at(gt, "lo")?,
+        outputs: bundle::ints_at(gt, "outputs")?,
     };
-    let fc1_shift = b["fc1_shift"].as_u64().expect("fc1_shift") as u32;
-    let fc2_shift = b["fc2_shift"].as_u64().expect("fc2_shift") as u32;
+    let fc1_shift = bundle::u64_at(&b, "fc1_shift")? as u32;
+    let fc2_shift = bundle::u64_at(&b, "fc2_shift")? as u32;
     let scales = vec![
         Scale {
             scale_id: 0,
@@ -103,8 +121,8 @@ pub fn load_bundle(json: &str) -> LewmBundle {
         rounding: Rounding::NearestTiesToEven,
         activation: None,
     };
-    LewmBundle {
-        label: b["model"].as_str().unwrap_or("lewm pred_proj").to_string(),
+    Ok(LewmBundle {
+        label: bundle::str_at_or(&b, "model", "lewm pred_proj"),
         model: Model {
             layers: vec![l1, l2],
             tables: vec![gelu],
@@ -113,11 +131,16 @@ pub fn load_bundle(json: &str) -> LewmBundle {
         input,
         dim: dim as usize,
         mlp: mlp as usize,
-    }
+    })
 }
 
 /// Run the prover over the bundle's `pred_proj` head and the real input latent.
-pub fn prove(bundle: &LewmBundle) -> AuditArtifact {
+///
+/// # Errors
+/// Returns [`ProveError`] if the reference inference fails or an input value lies
+/// outside the M31 representable range `[-2^30, 2^30-1]` (a malformed bundle can
+/// carry such values, since the loader does not range-check the raw input data).
+pub fn prove(bundle: &LewmBundle) -> Result<AuditArtifact, ProveError> {
     prove_feedforward(
         &bundle.model,
         &bundle.input,
@@ -126,7 +149,6 @@ pub fn prove(bundle: &LewmBundle) -> AuditArtifact {
             scale_id: 1,
         },
     )
-    .expect("prove lewm pred_proj head")
 }
 
 #[cfg(test)]
@@ -152,15 +174,27 @@ mod tests {
 
     #[test]
     fn loads_and_proves_pred_proj_bundle() {
-        let bundle = load_bundle(&tiny_bundle());
+        let bundle = load_bundle(&tiny_bundle()).expect("valid bundle");
         assert_eq!(bundle.dim, 2);
-        assert!(verify(&prove(&bundle)).is_ok());
+        assert!(verify(&prove(&bundle).expect("prove pred_proj")).is_ok());
+    }
+
+    #[test]
+    fn malformed_bundle_is_a_typed_error_not_a_panic() {
+        assert!(matches!(
+            load_bundle("not json"),
+            Err(BundleError::Parse(_))
+        ));
+        assert!(matches!(
+            load_bundle("{}"),
+            Err(BundleError::MissingField("dim"))
+        ));
     }
 
     #[test]
     fn tampered_pred_proj_is_rejected() {
-        let bundle = load_bundle(&tiny_bundle());
-        let mut a = prove(&bundle);
+        let bundle = load_bundle(&tiny_bundle()).expect("valid bundle");
+        let mut a = prove(&bundle).expect("prove pred_proj");
         let op = tamper_accumulator(&mut a).expect("a linear op");
         assert!(matches!(
             verify(&a),
