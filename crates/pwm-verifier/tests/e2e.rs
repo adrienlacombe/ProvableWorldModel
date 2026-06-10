@@ -265,6 +265,26 @@ fn reject_tampered_requant_output() {
 }
 
 #[test]
+fn reject_out_of_envelope_record_output() {
+    // Per-buffer range enforcement on the flat exact-recompute path (issue #180):
+    // a claimed requant output past the single-M31 envelope is rejected with the
+    // typed BufferRange before it threads into the next op's recompute.
+    let mut a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
+    let idx = a
+        .trace
+        .iter()
+        .position(|r| matches!(r, OpRecord::Requant(_)))
+        .unwrap();
+    if let OpRecord::Requant(r) = &mut a.trace[idx] {
+        r.output[0] = pwm_core::field::M31_SIGNED_HI + 1;
+    }
+    assert!(matches!(
+        verify(&a),
+        Err(VerifyError::BufferRange { op_id: 101 })
+    ));
+}
+
+#[test]
 fn reject_tampered_claimed_output() {
     let mut a = prove_feedforward(&model(), &input(), out_binding()).unwrap();
     let mut data: Vec<BoundedInt> = a.claimed_output.data().to_vec();

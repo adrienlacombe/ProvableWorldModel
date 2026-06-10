@@ -33,7 +33,7 @@ use pwm_core::commit::{
     claimed_output_commitment, predictor_inputs_commitment, weights_root, ModelBinding,
     PlannerBinding, QuantBinding,
 };
-use pwm_core::field::Fp61;
+use pwm_core::field::{in_signed_range, Fp61};
 use pwm_core::fixed_point::{requantize, valid_shift, Rounding};
 use pwm_core::freivalds::{
     check_linear_biased, dims_within_soundness_margin, precompute_v, within_operand_bound,
@@ -177,6 +177,21 @@ pub enum VerifyError {
     MissingBuffer {
         /// The missing buffer id.
         buf: u32,
+    },
+    /// A seeded block input buffer contained an element outside the single-M31
+    /// envelope `[-P_HALF, P_HALF]`, so the exact integer recomputes downstream
+    /// could overflow. Rejected, not computed on (fail-closed, issue #180).
+    InputRange {
+        /// The offending input buffer id.
+        buf: u32,
+    },
+    /// An exactly-recomputed op's claimed output or quantization parameter
+    /// (`zero_point`, `clamp_lo/hi`, `one`) escaped the single-M31 envelope
+    /// `[-P_HALF, P_HALF]`. Rejected with a typed error rather than letting the
+    /// `i64` recompute wrap into a panic (fail-closed, issue #180).
+    BufferRange {
+        /// Op id of the offending op.
+        op_id: u32,
     },
     /// A block op's claimed output disagreed with its exact recompute.
     BlockOpMismatch {
@@ -424,6 +439,13 @@ fn verify_with(artifact: &AuditArtifact, ch: &mut Challenges<'_>) -> Result<(), 
     for (index, record) in artifact.trace.iter().enumerate() {
         if record.input() != current.as_slice() {
             return Err(VerifyError::WiringMismatch { index });
+        }
+        // Range enforcement (issue #180): every exactly-recomputed record's
+        // claimed output must lie in the single-M31 envelope before it is
+        // recomputed or threaded onward (Linear is guarded by
+        // `range_guard_linear`, which reports `AccumulatorRange`).
+        if !matches!(record, OpRecord::Linear(_)) {
+            envelope_guard(record.op_id(), record.output())?;
         }
         match record {
             OpRecord::Linear(r) => {
@@ -681,6 +703,11 @@ fn audit_block(
 ) -> Result<Vec<i64>, VerifyError> {
     let mut bufs: BTreeMap<u32, Vec<i64>> = BTreeMap::new();
     for (id, v) in inputs {
+        // Range enforcement (issue #180): a seeded input outside the single-M31
+        // envelope could overflow the exact recomputes downstream; reject it.
+        if !v.iter().all(|&x| in_signed_range(x)) {
+            return Err(VerifyError::InputRange { buf: *id });
+        }
         bufs.insert(*id, v.clone());
     }
     let get = |bufs: &BTreeMap<u32, Vec<i64>>, id: u32| -> Result<Vec<i64>, VerifyError> {
@@ -702,6 +729,13 @@ fn audit_block(
     };
 
     for op in &block.ops {
+        // Range enforcement (issue #180): every exactly-recomputed op's claimed
+        // output must lie in the single-M31 envelope before it is recomputed or
+        // threaded onward (Linear/BatchedLinear are guarded by
+        // `range_guard_linear`, which reports `AccumulatorRange`).
+        if !matches!(op, BlockOp::Linear { .. } | BlockOp::BatchedLinear { .. }) {
+            envelope_guard(op.op_id(), op.out())?;
+        }
         match op {
             BlockOp::Linear {
                 op_id,
@@ -751,6 +785,7 @@ fn audit_block(
                 rounding,
             } => {
                 let x = get(&bufs, *in_buf)?;
+                envelope_guard(*op_id, &[*zero_point, *clamp_lo, *clamp_hi])?;
                 let mode = Rounding::from_discriminant(*rounding)
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
                 if !valid_shift(*shift) {
@@ -801,6 +836,7 @@ fn audit_block(
             } => {
                 let x = get(&bufs, *in_buf)?;
                 let table = find_table(*table_id)?;
+                envelope_guard(*op_id, &[*clamp_lo, *clamp_hi])?;
                 let mode = Rounding::from_discriminant(*rounding)
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
                 if !valid_shift(*shift) {
@@ -832,6 +868,7 @@ fn audit_block(
                 let x = get(&bufs, *x_buf)?;
                 let scale = get(&bufs, *scale_buf)?;
                 let shift = get(&bufs, *shift_buf)?;
+                envelope_guard(*op_id, &[*one, *clamp_lo, *clamp_hi])?;
                 let mode = Rounding::from_discriminant(*rounding)
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
                 if scale.len() != x.len() || shift.len() != x.len() {
@@ -868,6 +905,7 @@ fn audit_block(
             } => {
                 let g = get(&bufs, *gate_buf)?;
                 let x = get(&bufs, *x_buf)?;
+                envelope_guard(*op_id, &[*clamp_lo, *clamp_hi])?;
                 let mode = Rounding::from_discriminant(*rounding)
                     .ok_or(VerifyError::BlockOpMismatch { op_id: *op_id })?;
                 if g.len() != x.len() {
@@ -937,6 +975,7 @@ fn audit_block(
             } => {
                 let x = get(&bufs, *in_buf)?;
                 let t = find_table(*table_id)?;
+                envelope_guard(*op_id, &[*one])?;
                 let expected = softmax_rows(&x, *row_len as usize, t, *one).ok_or(
                     VerifyError::ActivationDomain {
                         table_id: *table_id,
@@ -1258,8 +1297,24 @@ fn range_guard_linear(
     }
 }
 
+/// Per-buffer range enforcement on the exact-recompute path (issue #180): every
+/// prover-supplied value the verifier computes on — a claimed op output or a
+/// proof-carried quantization parameter — must lie in the single-M31 envelope
+/// `[-P_HALF, P_HALF]` (the same bound the Freivalds operand guard enforces).
+/// This is what lets the exact recomputes (requant, modulate, gate, add) run on
+/// plain `i64` without wrapping: an out-of-envelope buffer is rejected with a
+/// typed error before any arithmetic touches it.
+fn envelope_guard(op_id: u32, vals: &[i64]) -> Result<(), VerifyError> {
+    if vals.iter().all(|&v| in_signed_range(v)) {
+        Ok(())
+    } else {
+        Err(VerifyError::BufferRange { op_id })
+    }
+}
+
 /// Exactly recompute the requantization and compare to the record (specs.md §8.1).
 fn check_requant(r: &pwm_core::trace::RequantRec) -> Result<(), VerifyError> {
+    envelope_guard(r.op_id, &[r.zero_point, r.clamp_lo, r.clamp_hi])?;
     let mode = Rounding::from_discriminant(r.rounding)
         .ok_or(VerifyError::ExactReplayMismatch { op_id: r.op_id })?;
     if !valid_shift(r.shift) {
@@ -1286,6 +1341,7 @@ fn check_layernorm(
     let table = artifact
         .table(r.table_id)
         .ok_or(VerifyError::MissingBinding(BindingKind::LayerNormTable))?;
+    envelope_guard(r.op_id, &[r.clamp_lo, r.clamp_hi])?;
     let mode = Rounding::from_discriminant(r.rounding)
         .ok_or(VerifyError::ExactReplayMismatch { op_id: r.op_id })?;
     if !valid_shift(r.shift) {

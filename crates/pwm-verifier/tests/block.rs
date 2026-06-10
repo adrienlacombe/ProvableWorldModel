@@ -651,6 +651,210 @@ fn reject_block_op_reading_undeclared_buffer() {
     ));
 }
 
+// --- per-buffer range enforcement on the exact-recompute path (issue #180):
+// out-of-envelope prover buffers and quantization params are rejected with a
+// typed error, and overflow-prone recomputes fail closed instead of panicking. ---
+
+use pwm_core::field::M31_SIGNED_HI;
+
+#[test]
+fn reject_out_of_envelope_seeded_input() {
+    // A seeded input buffer past the single-M31 envelope is rejected before any
+    // recompute touches it.
+    let proven = prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
+    let mut bad = attention_inputs();
+    bad[0].1[0] = M31_SIGNED_HI + 1;
+    assert!(matches!(
+        verify_block(&proven, &[], &exp_tables(), &bad),
+        Err(VerifyError::InputRange { buf: 0 })
+    ));
+}
+
+#[test]
+fn reject_out_of_envelope_matmul_output() {
+    // A claimed MatMul output past the envelope is rejected (BufferRange), not
+    // threaded into downstream softmax/matmul arithmetic.
+    let mut proven =
+        prove_block(&attention_block(), &[], &exp_tables(), &attention_inputs()).unwrap();
+    for op in &mut proven.ops {
+        if let BlockOp::MatMul { op_id: 1, out, .. } = op {
+            out[0] = M31_SIGNED_HI + 1;
+        }
+    }
+    assert!(matches!(
+        verify_block(&proven, &[], &exp_tables(), &attention_inputs()),
+        Err(VerifyError::BufferRange { op_id: 1 })
+    ));
+}
+
+#[test]
+fn reject_matmul_accumulator_overflow_without_panic() {
+    // 16 envelope-edge products sum to ≈1.8e19 — past i64. The i128 accumulator
+    // computes it exactly and the kernel fails closed (BlockOpMismatch), where the
+    // old i64 sum wrapped (a panic under overflow-checks).
+    let block = Block {
+        input_bufs: vec![0, 1],
+        ops: vec![BlockOp::MatMul {
+            op_id: 1,
+            a_buf: 0,
+            b_buf: 1,
+            out_buf: 2,
+            out: vec![0],
+            rows: 1,
+            inner: 16,
+            cols: 1,
+            transpose_b: false,
+        }],
+        output_buf: 2,
+    };
+    let big = vec![M31_SIGNED_HI; 16];
+    let inputs = vec![(0u32, big.clone()), (1u32, big)];
+    assert!(matches!(
+        verify_block(&block, &[], &[], &inputs),
+        Err(VerifyError::BlockOpMismatch { op_id: 1 })
+    ));
+}
+
+#[test]
+fn reject_layernorm_variance_overflow_without_panic() {
+    // Σ(x−mean)² over 16 envelope-edge values ≈ 1.8e19 — past i64. The i128 sum
+    // computes the exact variance, which misses the committed table domain: a
+    // typed ActivationDomain rejection, not a panic.
+    let table = ident_table(1, 0, 1000);
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::LayerNorm {
+            op_id: 1,
+            table_id: 1,
+            in_buf: 0,
+            out_buf: 2,
+            out: vec![0; 16],
+            shift: 0,
+            clamp_lo: -128,
+            clamp_hi: 127,
+            rounding: RND,
+        }],
+        output_buf: 2,
+    };
+    let x: Vec<i64> = (0..16)
+        .map(|i| {
+            if i % 2 == 0 {
+                M31_SIGNED_HI
+            } else {
+                -M31_SIGNED_HI
+            }
+        })
+        .collect();
+    assert!(matches!(
+        verify_block(&block, &[], &[table], &[(0u32, x)]),
+        Err(VerifyError::ActivationDomain { table_id: 1 })
+    ));
+}
+
+#[test]
+fn reject_softmax_out_of_envelope_probability() {
+    // An adversarial committed exp table with huge mixed-sign outputs makes Σe = 2,
+    // so a probability (e·one)/Σe ≈ 2^49 escapes the envelope. The old i64
+    // `e · one` could wrap; the i128 product is exact and the kernel fails closed.
+    let table = ActivationTable {
+        table_id: 3,
+        lo: -1,
+        outputs: vec![-(1 << 40) + 2, 1 << 40],
+    };
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::Softmax {
+            op_id: 1,
+            table_id: 3,
+            in_buf: 0,
+            out_buf: 2,
+            out: vec![0, 0],
+            row_len: 2,
+            one: 1024,
+        }],
+        output_buf: 2,
+    };
+    assert!(matches!(
+        verify_block(&block, &[], &[table], &[(0u32, vec![0, -1])]),
+        Err(VerifyError::ActivationDomain { table_id: 3 })
+    ));
+}
+
+#[test]
+fn reject_requant_zero_point_out_of_envelope() {
+    // An i64::MAX zero point previously wrapped `rounded + zero_point` (panic);
+    // now it is rejected as an out-of-envelope quantization parameter.
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::Requant {
+            op_id: 1,
+            in_buf: 0,
+            out_buf: 2,
+            out: vec![0],
+            shift: 0,
+            zero_point: i64::MAX,
+            clamp_lo: -128,
+            clamp_hi: 127,
+            rounding: RND,
+        }],
+        output_buf: 2,
+    };
+    assert!(matches!(
+        verify_block(&block, &[], &[], &[(0u32, vec![1])]),
+        Err(VerifyError::BufferRange { op_id: 1 })
+    ));
+}
+
+#[test]
+fn reject_modulate_one_out_of_envelope() {
+    // An i64::MAX fixed-point unit previously wrapped `one + scale` (panic); now
+    // it is rejected as an out-of-envelope quantization parameter.
+    let block = Block {
+        input_bufs: vec![0, 1, 2],
+        ops: vec![BlockOp::Modulate {
+            op_id: 1,
+            x_buf: 0,
+            scale_buf: 1,
+            shift_buf: 2,
+            out_buf: 3,
+            out: vec![0],
+            one: i64::MAX,
+            shift_bits: 0,
+            clamp_lo: -128,
+            clamp_hi: 127,
+            rounding: RND,
+        }],
+        output_buf: 3,
+    };
+    let inputs = vec![(0u32, vec![2]), (1u32, vec![1]), (2u32, vec![0])];
+    assert!(matches!(
+        verify_block(&block, &[], &[], &inputs),
+        Err(VerifyError::BufferRange { op_id: 1 })
+    ));
+}
+
+#[test]
+fn reject_softmax_one_out_of_envelope() {
+    let table = ident_table(3, -2, 0);
+    let block = Block {
+        input_bufs: vec![0],
+        ops: vec![BlockOp::Softmax {
+            op_id: 1,
+            table_id: 3,
+            in_buf: 0,
+            out_buf: 2,
+            out: vec![0, 0],
+            row_len: 2,
+            one: i64::MAX,
+        }],
+        output_buf: 2,
+    };
+    assert!(matches!(
+        verify_block(&block, &[], &[table], &[(0u32, vec![0, -1])]),
+        Err(VerifyError::BufferRange { op_id: 1 })
+    ));
+}
+
 #[test]
 fn reject_layernorm_out_of_range_shift() {
     // A LayerNorm shift past MAX_SHIFT is rejected before any compute (InvalidShift).
